@@ -1,0 +1,177 @@
+"use strict";
+/**
+ * GitHub Diff Module - PR Diff Fetch and Normalization
+ */
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.getPRInfo = getPRInfo;
+exports.getPRFiles = getPRFiles;
+exports.normalizeDiff = normalizeDiff;
+exports.getConfigFromEnv = getConfigFromEnv;
+exports.filterFilesByExtension = filterFilesByExtension;
+exports.filterOutTestFiles = filterOutTestFiles;
+const rest_1 = require("@octokit/rest");
+const models_js_1 = require("../config/models.js");
+const logger_js_1 = require("../utils/logger.js");
+/**
+ * Create Octokit instance
+ */
+function createOctokit(token) {
+    return new rest_1.Octokit({ auth: token });
+}
+/**
+ * Fetch PR information
+ */
+async function getPRInfo(config) {
+    const octokit = createOctokit(config.token);
+    const { data } = await octokit.pulls.get({
+        owner: config.owner,
+        repo: config.repo,
+        pull_number: config.prNumber,
+    });
+    return {
+        number: data.number,
+        title: data.title,
+        body: data.body,
+        state: data.state,
+        base: {
+            ref: data.base.ref,
+            sha: data.base.sha,
+        },
+        head: {
+            ref: data.head.ref,
+            sha: data.head.sha,
+        },
+        user: {
+            login: data.user?.login ?? 'unknown',
+        },
+    };
+}
+/**
+ * Fetch PR diff files
+ */
+async function getPRFiles(config) {
+    const octokit = createOctokit(config.token);
+    const { data } = await octokit.pulls.listFiles({
+        owner: config.owner,
+        repo: config.repo,
+        pull_number: config.prNumber,
+        per_page: 100, // GitHub API limit
+    });
+    return data.map((file) => ({
+        filename: file.filename,
+        status: file.status,
+        additions: file.additions,
+        deletions: file.deletions,
+        patch: file.patch,
+        previousFilename: file.previous_filename,
+    }));
+}
+/**
+ * Normalize diff into a structured format
+ */
+async function normalizeDiff(config) {
+    logger_js_1.logger.info('Fetching PR diff', {
+        owner: config.owner,
+        repo: config.repo,
+        prNumber: config.prNumber,
+    });
+    const [prInfo, files] = await Promise.all([getPRInfo(config), getPRFiles(config)]);
+    // Build combined diff
+    const combinedDiff = files
+        .filter((f) => f.patch) // Only files with patches
+        .map((f) => {
+        const header = `diff --git a/${f.filename} b/${f.filename}`;
+        const status = f.status === 'added'
+            ? 'new file'
+            : f.status === 'removed'
+                ? 'deleted file'
+                : f.status === 'renamed'
+                    ? `renamed from ${f.previousFilename}`
+                    : 'modified';
+        return `${header}\n--- ${status} ---\n${f.patch}`;
+    })
+        .join('\n\n');
+    // Calculate size
+    const totalAdditions = files.reduce((sum, f) => sum + f.additions, 0);
+    const totalDeletions = files.reduce((sum, f) => sum + f.deletions, 0);
+    const prSize = (0, models_js_1.calculatePRSize)(files.length, totalAdditions, totalDeletions);
+    const normalized = {
+        files,
+        combinedDiff,
+        metadata: {
+            title: prInfo.title,
+            body: prInfo.body,
+            baseRef: prInfo.base.ref,
+            headRef: prInfo.head.ref,
+            author: prInfo.user.login,
+        },
+        size: {
+            filesChanged: files.length,
+            totalAdditions,
+            totalDeletions,
+            category: prSize.category,
+        },
+    };
+    logger_js_1.logger.info('PR diff normalized', {
+        filesChanged: normalized.size.filesChanged,
+        additions: normalized.size.totalAdditions,
+        deletions: normalized.size.totalDeletions,
+        category: normalized.size.category,
+        diffLength: combinedDiff.length,
+    });
+    return normalized;
+}
+/**
+ * Get diff from GitHub Action context (environment variables)
+ */
+function getConfigFromEnv() {
+    const token = process.env['GITHUB_TOKEN'];
+    const repository = process.env['GITHUB_REPOSITORY'];
+    const prNumber = process.env['PR_NUMBER'] ?? process.env['GITHUB_REF_NAME']?.match(/\d+/)?.[0];
+    if (!token) {
+        throw new Error('GITHUB_TOKEN environment variable is required');
+    }
+    if (!repository) {
+        throw new Error('GITHUB_REPOSITORY environment variable is required');
+    }
+    if (!prNumber) {
+        throw new Error('PR_NUMBER or valid GITHUB_REF_NAME is required');
+    }
+    const [owner, repo] = repository.split('/');
+    if (!owner || !repo) {
+        throw new Error('Invalid GITHUB_REPOSITORY format (expected owner/repo)');
+    }
+    return {
+        token,
+        owner,
+        repo,
+        prNumber: parseInt(prNumber, 10),
+    };
+}
+/**
+ * Filter files by extensions (for focused review)
+ */
+function filterFilesByExtension(files, extensions) {
+    const extSet = new Set(extensions.map((e) => (e.startsWith('.') ? e : `.${e}`)));
+    return files.filter((f) => {
+        const ext = f.filename.slice(f.filename.lastIndexOf('.'));
+        return extSet.has(ext);
+    });
+}
+/**
+ * Filter out test files
+ */
+function filterOutTestFiles(files) {
+    const testPatterns = [
+        /\.test\./,
+        /\.spec\./,
+        /__tests__/,
+        /\.stories\./,
+        /\.mock\./,
+        /test\//,
+        /tests\//,
+        /spec\//,
+    ];
+    return files.filter((f) => !testPatterns.some((p) => p.test(f.filename)));
+}
+//# sourceMappingURL=diff.js.map
