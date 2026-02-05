@@ -548,15 +548,13 @@ function parseInputs() {
     const scannerModelsRaw = getInput('scanner-models', '');
     const scannerModels = parseScannerModels(scannerModelsRaw);
     const judgeModel = getInput('judge-model', '');
+    // Validate auto-select-models first (not implemented in MVP)
+    if (autoSelectModels) {
+        throw new Error('auto-select-models is not implemented in MVP. Please provide scanner-models explicitly and set auto-select-models to false.');
+    }
     // Validate scanner-models
     if (scannerModels.length === 0) {
-        if (autoSelectModels) {
-            // Auto-select not implemented in MVP
-            throw new Error('auto-select-models is not implemented in MVP. Please provide scanner-models explicitly.');
-        }
-        else {
-            throw new Error("Required input 'scanner-models' is missing. Provide a list of models (CSV, multiline, or JSON array).");
-        }
+        throw new Error("Required input 'scanner-models' is missing. Provide a list of models (CSV, multiline, or JSON array).");
     }
     // Validate judge-model
     if (!judgeModel) {
