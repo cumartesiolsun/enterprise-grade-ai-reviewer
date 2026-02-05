@@ -84,7 +84,7 @@ jobs:
       contents: read
       pull-requests: write
     steps:
-      - uses: cumartesiolsun/enterprise-grade-ai-reviewer@v0.1.0
+      - uses: cumartesiolsun/enterprise-grade-ai-reviewer@v0.1.1
         with:
           openrouter-api-key: ${{ secrets.OPENROUTER_API_KEY }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
@@ -151,6 +151,26 @@ There are no hardcoded model names. The action works with any model available th
 - Automatic fallback and load balancing
 - Cost tracking and usage limits
 - No vendor lock-in
+
+## Scanner Status Tracking
+
+PR comments show the status of each scanner model:
+
+```
+### Sources
+
+- `anthropic/claude-3-haiku`: ✅ OK
+- `openai/gpt-4o-mini`: ✅ OK
+- `google/gemini-flash-1.5`: ⏭️ SKIPPED (empty/LGTM)
+- `x-ai/grok-beta`: ❌ FAILED (timeout)
+```
+
+**Status Types:**
+- `✅ OK` — Scanner returned meaningful review content
+- `⏭️ SKIPPED (empty/LGTM)` — Scanner returned empty response or "looks good"
+- `❌ FAILED (error)` — Scanner failed (timeout, 429, 5xx, etc.)
+
+This helps identify which models are working and which are having issues.
 
 ## Retry Policy
 

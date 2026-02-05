@@ -1,6 +1,6 @@
 {
   "name": "enterprise-grade-ai-reviewer",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Enterprise-grade AI code reviewer with multi-LLM parallel scanning and judge aggregation",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
