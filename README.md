@@ -84,7 +84,7 @@ jobs:
       contents: read
       pull-requests: write
     steps:
-      - uses: your-org/enterprise-grade-ai-reviewer@v0.1
+      - uses: cumartesiolsun/enterprise-grade-ai-reviewer@v0.1.0
         with:
           openrouter-api-key: ${{ secrets.OPENROUTER_API_KEY }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
