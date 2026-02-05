@@ -34,11 +34,12 @@ interface ActionInputs {
 
 /**
  * Get action input with default (kebab-case input names)
- * GitHub Actions converts kebab-case to uppercase with underscores
+ * GitHub Actions preserves hyphens in env var names (INPUT_GITHUB-TOKEN)
+ * See: https://github.com/actions/runner/issues/2283
  */
 function getInput(name: string, defaultValue: string): string {
-  // GitHub Actions: openrouter-api-key -> INPUT_OPENROUTER_API_KEY
-  const envName = `INPUT_${name.toUpperCase().replaceAll('-', '_')}`;
+  // GitHub Actions: github-token -> INPUT_GITHUB-TOKEN (hyphens preserved)
+  const envName = `INPUT_${name.toUpperCase()}`;
   return process.env[envName] ?? defaultValue;
 }
 
@@ -271,7 +272,11 @@ async function run(): Promise<void> {
 
     // Try to post error comment
     try {
-      process.env['GITHUB_TOKEN'] = process.env['INPUT_GITHUB_TOKEN'];
+      // Use getInput helper which handles kebab-case -> INPUT_UPPER_SNAKE conversion
+      const fallbackToken = getInput('github-token', '');
+      if (fallbackToken) {
+        process.env['GITHUB_TOKEN'] = fallbackToken;
+      }
       const githubConfig = getConfigFromEnv();
       const commentMarker = getInput('comment-marker', 'ENTERPRISE_AI_REVIEW');
 

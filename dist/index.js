@@ -488,11 +488,12 @@ __nccwpck_require__.a(__webpack_module__, async (__webpack_handle_async_dependen
 
 /**
  * Get action input with default (kebab-case input names)
- * GitHub Actions converts kebab-case to uppercase with underscores
+ * GitHub Actions preserves hyphens in env var names (INPUT_GITHUB-TOKEN)
+ * See: https://github.com/actions/runner/issues/2283
  */
 function getInput(name, defaultValue) {
-    // GitHub Actions: openrouter-api-key -> INPUT_OPENROUTER_API_KEY
-    const envName = `INPUT_${name.toUpperCase().replaceAll('-', '_')}`;
+    // GitHub Actions: github-token -> INPUT_GITHUB-TOKEN (hyphens preserved)
+    const envName = `INPUT_${name.toUpperCase()}`;
     return process.env[envName] ?? defaultValue;
 }
 /**
@@ -678,7 +679,11 @@ async function run() {
         _utils_logger_js__WEBPACK_IMPORTED_MODULE_4__/* .logger */ .v.error('Review failed', { error: errorMessage });
         // Try to post error comment
         try {
-            process.env['GITHUB_TOKEN'] = process.env['INPUT_GITHUB_TOKEN'];
+            // Use getInput helper which handles kebab-case -> INPUT_UPPER_SNAKE conversion
+            const fallbackToken = getInput('github-token', '');
+            if (fallbackToken) {
+                process.env['GITHUB_TOKEN'] = fallbackToken;
+            }
             const githubConfig = (0,_github_diff_js__WEBPACK_IMPORTED_MODULE_0__/* .getConfigFromEnv */ .Al)();
             const commentMarker = getInput('comment-marker', 'ENTERPRISE_AI_REVIEW');
             await (0,_github_comments_js__WEBPACK_IMPORTED_MODULE_1__/* .postOrUpdateComment */ .I)(githubConfig, {
