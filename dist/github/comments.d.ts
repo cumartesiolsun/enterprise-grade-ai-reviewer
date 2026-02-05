@@ -3,9 +3,10 @@
  * MVP v0.1 - Single PR comment with stable marker
  */
 import type { GitHubConfig, TruncationInfo } from './diff.js';
+import type { ScannerResult } from '../review/scanner.js';
 export interface ReviewCommentData {
     judgeOutput: string;
-    scannerModels: string[];
+    scannerResults: ScannerResult[];
     truncation: TruncationInfo;
 }
 /**

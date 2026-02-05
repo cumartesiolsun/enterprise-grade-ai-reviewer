@@ -22,12 +22,18 @@ async function runSingleScanner(config, model, diff) {
             durationMs,
             outputLength: content.length,
         });
+        // Determine status: OK if has content, SKIPPED if empty/LGTM
+        const isEmptyOrLgtm = content.trim().length === 0 ||
+            content.toLowerCase().includes('lgtm') ||
+            content.toLowerCase().includes('looks good');
+        const status = isEmptyOrLgtm ? 'SKIPPED' : 'OK';
         return {
             model,
             output: content,
             tokensUsed,
             durationMs,
             success: true,
+            status,
         };
     }
     catch (error) {
@@ -40,6 +46,7 @@ async function runSingleScanner(config, model, diff) {
             tokensUsed: 0,
             durationMs,
             success: false,
+            status: 'FAILED',
             error: errorMessage,
         };
     }

@@ -8,12 +8,15 @@ import { callOpenRouter } from '../openrouter/client.js';
 import { buildScannerSystemPrompt, buildScannerUserPrompt } from './prompts.js';
 import { logger } from '../utils/logger.js';
 
+export type ScannerStatus = 'OK' | 'SKIPPED' | 'FAILED';
+
 export interface ScannerResult {
   model: string;
   output: string;
   tokensUsed: number;
   durationMs: number;
   success: boolean;
+  status: ScannerStatus;
   error?: string | undefined;
 }
 
@@ -56,12 +59,20 @@ async function runSingleScanner(
       outputLength: content.length,
     });
 
+    // Determine status: OK if has content, SKIPPED if empty/LGTM
+    const isEmptyOrLgtm = content.trim().length === 0 ||
+      content.toLowerCase().includes('lgtm') ||
+      content.toLowerCase().includes('looks good');
+
+    const status: ScannerStatus = isEmptyOrLgtm ? 'SKIPPED' : 'OK';
+
     return {
       model,
       output: content,
       tokensUsed,
       durationMs,
       success: true,
+      status,
     };
   } catch (error) {
     const durationMs = Math.round(performance.now() - start);
@@ -75,6 +86,7 @@ async function runSingleScanner(
       tokensUsed: 0,
       durationMs,
       success: false,
+      status: 'FAILED' as ScannerStatus,
       error: errorMessage,
     };
   }

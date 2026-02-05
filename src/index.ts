@@ -190,7 +190,7 @@ async function run(): Promise<void> {
         githubConfig,
         {
           judgeOutput: 'No code changes detected in this PR.',
-          scannerModels: [],
+          scannerResults: [],
           truncation: diff.truncation,
         },
         inputs.commentMarker
@@ -222,7 +222,7 @@ async function run(): Promise<void> {
         githubConfig,
         {
           judgeOutput: 'Review failed - all scanner models returned errors.',
-          scannerModels: inputs.scannerModels,
+          scannerResults: scannerResults,
           truncation: diff.truncation,
         },
         inputs.commentMarker
@@ -251,7 +251,7 @@ async function run(): Promise<void> {
       githubConfig,
       {
         judgeOutput: judgeResult.output,
-        scannerModels: successfulScanners.map((r) => r.model),
+        scannerResults: scannerResults,
         truncation: diff.truncation,
       },
       inputs.commentMarker
@@ -284,7 +284,7 @@ async function run(): Promise<void> {
         githubConfig,
         {
           judgeOutput: `Review failed with error: ${errorMessage}`,
-          scannerModels: [],
+          scannerResults: [],
           truncation: {
             filesFound: 0,
             filesReviewed: 0,

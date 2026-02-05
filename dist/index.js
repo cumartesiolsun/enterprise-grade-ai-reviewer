@@ -199,41 +199,46 @@ function createOctokit(token) {
     return new _octokit_rest__WEBPACK_IMPORTED_MODULE_1__/* .Octokit */ .E({ auth: token });
 }
 /**
+ * Get status badge for scanner result
+ */
+function getStatusBadge(result) {
+    switch (result.status) {
+        case 'OK':
+            return '✅ OK';
+        case 'SKIPPED':
+            return '⏭️ SKIPPED (empty/LGTM)';
+        case 'FAILED':
+            return `❌ FAILED (${result.error ?? 'unknown error'})`;
+        default:
+            return '❓ UNKNOWN';
+    }
+}
+/**
  * Build the comment body with marker
  */
 function buildCommentBody(data, commentMarker) {
-    const lines = [];
-    // Header
-    lines.push('## Enterprise AI Review');
-    lines.push('');
-    // Hidden marker for finding/updating the comment
-    lines.push(`<!-- ${commentMarker} -->`);
-    lines.push('');
-    // Final Review section (judge output)
-    lines.push('### Final Review');
-    lines.push('');
-    lines.push(data.judgeOutput);
-    lines.push('');
-    // Sources section (scanner model names)
-    lines.push('### Sources');
-    lines.push('');
-    for (const model of data.scannerModels) {
-        lines.push(`- ${model}`);
+    const sections = [
+        '## Enterprise AI Review',
+        '',
+        `<!-- ${commentMarker} -->`,
+        '',
+        '### Final Review',
+        '',
+        data.judgeOutput,
+        '',
+        '### Sources',
+        '',
+    ];
+    // Add scanner results with status badges
+    for (const result of data.scannerResults) {
+        sections.push(`- \`${result.model}\`: ${getStatusBadge(result)}`);
     }
-    lines.push('');
+    sections.push('');
     // Notes section (if truncation occurred)
     if (data.truncation.wasTruncated) {
-        lines.push('### Notes');
-        lines.push('');
-        lines.push(`⚠️ ${data.truncation.truncationReason}`);
-        lines.push('');
-        lines.push(`- Files found: ${data.truncation.filesFound}`);
-        lines.push(`- Files reviewed: ${data.truncation.filesReviewed}`);
-        lines.push(`- Original size: ${data.truncation.originalChars} chars`);
-        lines.push(`- Reviewed size: ${data.truncation.truncatedChars} chars`);
-        lines.push('');
+        sections.push('### Notes', '', `⚠️ ${data.truncation.truncationReason}`, '', `- Files found: ${data.truncation.filesFound}`, `- Files reviewed: ${data.truncation.filesReviewed}`, `- Original size: ${data.truncation.originalChars} chars`, `- Reviewed size: ${data.truncation.truncatedChars} chars`, '');
     }
-    return lines.join('\n');
+    return sections.join('\n');
 }
 /**
  * Find existing comment with the marker
@@ -619,7 +624,7 @@ async function run() {
             _utils_logger_js__WEBPACK_IMPORTED_MODULE_4__/* .logger */ .v.warn('No diff content to review');
             await (0,_github_comments_js__WEBPACK_IMPORTED_MODULE_1__/* .postOrUpdateComment */ .I)(githubConfig, {
                 judgeOutput: 'No code changes detected in this PR.',
-                scannerModels: [],
+                scannerResults: [],
                 truncation: diff.truncation,
             }, inputs.commentMarker);
             return;
@@ -642,7 +647,7 @@ async function run() {
             _utils_logger_js__WEBPACK_IMPORTED_MODULE_4__/* .logger */ .v.error('All scanners failed');
             await (0,_github_comments_js__WEBPACK_IMPORTED_MODULE_1__/* .postOrUpdateComment */ .I)(githubConfig, {
                 judgeOutput: 'Review failed - all scanner models returned errors.',
-                scannerModels: inputs.scannerModels,
+                scannerResults: scannerResults,
                 truncation: diff.truncation,
             }, inputs.commentMarker);
             return;
@@ -663,7 +668,7 @@ async function run() {
         // Step 4: Post comment to GitHub
         await (0,_github_comments_js__WEBPACK_IMPORTED_MODULE_1__/* .postOrUpdateComment */ .I)(githubConfig, {
             judgeOutput: judgeResult.output,
-            scannerModels: successfulScanners.map((r) => r.model),
+            scannerResults: scannerResults,
             truncation: diff.truncation,
         }, inputs.commentMarker);
         const totalDuration = Math.round(performance.now() - startTime);
@@ -688,7 +693,7 @@ async function run() {
             const commentMarker = getInput('comment-marker', 'ENTERPRISE_AI_REVIEW');
             await (0,_github_comments_js__WEBPACK_IMPORTED_MODULE_1__/* .postOrUpdateComment */ .I)(githubConfig, {
                 judgeOutput: `Review failed with error: ${errorMessage}`,
-                scannerModels: [],
+                scannerResults: [],
                 truncation: {
                     filesFound: 0,
                     filesReviewed: 0,
@@ -1047,12 +1052,18 @@ async function runSingleScanner(config, model, diff) {
             durationMs,
             outputLength: content.length,
         });
+        // Determine status: OK if has content, SKIPPED if empty/LGTM
+        const isEmptyOrLgtm = content.trim().length === 0 ||
+            content.toLowerCase().includes('lgtm') ||
+            content.toLowerCase().includes('looks good');
+        const status = isEmptyOrLgtm ? 'SKIPPED' : 'OK';
         return {
             model,
             output: content,
             tokensUsed,
             durationMs,
             success: true,
+            status,
         };
     }
     catch (error) {
@@ -1065,6 +1076,7 @@ async function runSingleScanner(config, model, diff) {
             tokensUsed: 0,
             durationMs,
             success: false,
+            status: 'FAILED',
             error: errorMessage,
         };
     }

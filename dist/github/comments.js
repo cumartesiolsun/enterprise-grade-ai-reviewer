@@ -11,41 +11,46 @@ function createOctokit(token) {
     return new Octokit({ auth: token });
 }
 /**
+ * Get status badge for scanner result
+ */
+function getStatusBadge(result) {
+    switch (result.status) {
+        case 'OK':
+            return '✅ OK';
+        case 'SKIPPED':
+            return '⏭️ SKIPPED (empty/LGTM)';
+        case 'FAILED':
+            return `❌ FAILED (${result.error ?? 'unknown error'})`;
+        default:
+            return '❓ UNKNOWN';
+    }
+}
+/**
  * Build the comment body with marker
  */
 export function buildCommentBody(data, commentMarker) {
-    const lines = [];
-    // Header
-    lines.push('## Enterprise AI Review');
-    lines.push('');
-    // Hidden marker for finding/updating the comment
-    lines.push(`<!-- ${commentMarker} -->`);
-    lines.push('');
-    // Final Review section (judge output)
-    lines.push('### Final Review');
-    lines.push('');
-    lines.push(data.judgeOutput);
-    lines.push('');
-    // Sources section (scanner model names)
-    lines.push('### Sources');
-    lines.push('');
-    for (const model of data.scannerModels) {
-        lines.push(`- ${model}`);
+    const sections = [
+        '## Enterprise AI Review',
+        '',
+        `<!-- ${commentMarker} -->`,
+        '',
+        '### Final Review',
+        '',
+        data.judgeOutput,
+        '',
+        '### Sources',
+        '',
+    ];
+    // Add scanner results with status badges
+    for (const result of data.scannerResults) {
+        sections.push(`- \`${result.model}\`: ${getStatusBadge(result)}`);
     }
-    lines.push('');
+    sections.push('');
     // Notes section (if truncation occurred)
     if (data.truncation.wasTruncated) {
-        lines.push('### Notes');
-        lines.push('');
-        lines.push(`⚠️ ${data.truncation.truncationReason}`);
-        lines.push('');
-        lines.push(`- Files found: ${data.truncation.filesFound}`);
-        lines.push(`- Files reviewed: ${data.truncation.filesReviewed}`);
-        lines.push(`- Original size: ${data.truncation.originalChars} chars`);
-        lines.push(`- Reviewed size: ${data.truncation.truncatedChars} chars`);
-        lines.push('');
+        sections.push('### Notes', '', `⚠️ ${data.truncation.truncationReason}`, '', `- Files found: ${data.truncation.filesFound}`, `- Files reviewed: ${data.truncation.filesReviewed}`, `- Original size: ${data.truncation.originalChars} chars`, `- Reviewed size: ${data.truncation.truncatedChars} chars`, '');
     }
-    return lines.join('\n');
+    return sections.join('\n');
 }
 /**
  * Find existing comment with the marker

@@ -3,12 +3,14 @@
  * MVP v0.1 - Configurable models, parallel execution
  */
 import type { OpenRouterConfig } from '../openrouter/client.js';
+export type ScannerStatus = 'OK' | 'SKIPPED' | 'FAILED';
 export interface ScannerResult {
     model: string;
     output: string;
     tokensUsed: number;
     durationMs: number;
     success: boolean;
+    status: ScannerStatus;
     error?: string | undefined;
 }
 export interface ScannerConfig {
