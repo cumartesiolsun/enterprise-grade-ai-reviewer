@@ -487,10 +487,11 @@ __nccwpck_require__.a(__webpack_module__, async (__webpack_handle_async_dependen
 
 
 /**
- * Get action input with default
+ * Get action input with default (kebab-case input names)
+ * GitHub Actions converts kebab-case to uppercase with underscores
  */
 function getInput(name, defaultValue) {
-    // GitHub Actions passes inputs as INPUT_<NAME> environment variables
+    // GitHub Actions: openrouter-api-key -> INPUT_OPENROUTER_API_KEY
     const envName = `INPUT_${name.toUpperCase().replaceAll('-', '_')}`;
     return process.env[envName] ?? defaultValue;
 }
@@ -505,25 +506,76 @@ function getRequiredInput(name) {
     return value;
 }
 /**
+ * Parse scanner-models input (supports JSON array, multiline, or CSV)
+ */
+function parseScannerModels(input) {
+    const trimmed = input.trim();
+    if (trimmed.length === 0) {
+        return [];
+    }
+    // Try JSON array first
+    if (trimmed.startsWith('[')) {
+        try {
+            const parsed = JSON.parse(trimmed);
+            if (Array.isArray(parsed)) {
+                return parsed
+                    .map((item) => String(item).trim())
+                    .filter((item) => item.length > 0);
+            }
+        }
+        catch {
+            // Not valid JSON, fall through to other methods
+        }
+    }
+    // Try multiline (contains newlines)
+    if (trimmed.includes('\n')) {
+        return trimmed
+            .split('\n')
+            .map((line) => line.trim())
+            .filter((line) => line.length > 0);
+    }
+    // Fallback to CSV
+    return trimmed
+        .split(',')
+        .map((item) => item.trim())
+        .filter((item) => item.length > 0);
+}
+/**
  * Parse action inputs from environment
  */
 function parseInputs() {
+    const autoSelectModels = getInput('auto-select-models', 'false').toLowerCase() === 'true';
+    const scannerModelsRaw = getInput('scanner-models', '');
+    const scannerModels = parseScannerModels(scannerModelsRaw);
+    const judgeModel = getInput('judge-model', '');
+    // Validate scanner-models
+    if (scannerModels.length === 0) {
+        if (autoSelectModels) {
+            // Auto-select not implemented in MVP
+            throw new Error('auto-select-models is not implemented in MVP. Please provide scanner-models explicitly.');
+        }
+        else {
+            throw new Error("Required input 'scanner-models' is missing. Provide a list of models (CSV, multiline, or JSON array).");
+        }
+    }
+    // Validate judge-model
+    if (!judgeModel) {
+        throw new Error("Required input 'judge-model' is missing.");
+    }
     return {
-        openrouterApiKey: getRequiredInput('openrouter_api_key'),
-        githubToken: getRequiredInput('github_token'),
-        baseUrl: getInput('base_url', 'https://openrouter.ai/api/v1'),
-        scannerModels: getInput('scanner_models', 'openai/gpt-4o,anthropic/claude-3.5-sonnet,google/gemini-2.0-flash-exp')
-            .split(',')
-            .map((m) => m.trim())
-            .filter((m) => m.length > 0),
-        judgeModel: getInput('judge_model', 'anthropic/claude-3.5-sonnet'),
-        language: getInput('language', 'Turkish'),
-        maxFiles: Number.parseInt(getInput('max_files', '10'), 10),
-        maxChars: Number.parseInt(getInput('max_chars', '80000'), 10),
-        timeoutMs: Number.parseInt(getInput('timeout_ms', '180000'), 10),
-        maxTokensScanner: Number.parseInt(getInput('max_tokens_scanner', '600'), 10),
-        maxTokensJudge: Number.parseInt(getInput('max_tokens_judge', '800'), 10),
-        commentMarker: getInput('comment_marker', 'ENTERPRISE_AI_REVIEW'),
+        openrouterApiKey: getRequiredInput('openrouter-api-key'),
+        githubToken: getRequiredInput('github-token'),
+        baseUrl: getInput('base-url', 'https://openrouter.ai/api/v1'),
+        scannerModels,
+        judgeModel,
+        language: getInput('language', 'tr'),
+        autoSelectModels,
+        maxFiles: Number.parseInt(getInput('max-files', '10'), 10),
+        maxChars: Number.parseInt(getInput('max-chars', '80000'), 10),
+        timeoutMs: Number.parseInt(getInput('timeout-ms', '180000'), 10),
+        maxTokensScanner: Number.parseInt(getInput('max-tokens-scanner', '600'), 10),
+        maxTokensJudge: Number.parseInt(getInput('max-tokens-judge', '800'), 10),
+        commentMarker: getInput('comment-marker', 'ENTERPRISE_AI_REVIEW'),
     };
 }
 /**
@@ -630,7 +682,7 @@ async function run() {
         try {
             process.env['GITHUB_TOKEN'] = process.env['INPUT_GITHUB_TOKEN'];
             const githubConfig = (0,_github_diff_js__WEBPACK_IMPORTED_MODULE_0__/* .getConfigFromEnv */ .Al)();
-            const commentMarker = getInput('comment_marker', 'ENTERPRISE_AI_REVIEW');
+            const commentMarker = getInput('comment-marker', 'ENTERPRISE_AI_REVIEW');
             await (0,_github_comments_js__WEBPACK_IMPORTED_MODULE_1__/* .postOrUpdateComment */ .I)(githubConfig, {
                 judgeOutput: `Review failed with error: ${errorMessage}`,
                 scannerModels: [],
@@ -790,6 +842,7 @@ async function callOpenRouter(config, model, messages, maxTokens, temperature = 
 /* harmony export */   R: () => (/* binding */ runJudge)
 /* harmony export */ });
 /* harmony import */ var _openrouter_client_js__WEBPACK_IMPORTED_MODULE_0__ = __nccwpck_require__(249);
+/* harmony import */ var _prompts_js__WEBPACK_IMPORTED_MODULE_2__ = __nccwpck_require__(386);
 /* harmony import */ var _utils_logger_js__WEBPACK_IMPORTED_MODULE_1__ = __nccwpck_require__(672);
 /**
  * Judge Module - Aggregation and Merge Logic
@@ -797,70 +850,7 @@ async function callOpenRouter(config, model, messages, maxTokens, temperature = 
  */
 
 
-/**
- * Get language instruction for system prompt
- */
-function getLanguageInstruction(language) {
-    const lang = language.toLowerCase();
-    if (lang === 'turkish' || lang === 'tr') {
-        return 'You MUST respond in Turkish. Tüm çıktılarınız Türkçe olmalıdır. Bu çok önemli.';
-    }
-    if (lang === 'english' || lang === 'en') {
-        return 'You MUST respond in English.';
-    }
-    return `You MUST respond in ${language}.`;
-}
-/**
- * Build judge system prompt
- */
-function buildSystemPrompt(language) {
-    const languageInstruction = getLanguageInstruction(language);
-    return `You are an expert code review aggregator. Your job is to:
 
-1. **Merge** findings from multiple AI reviewers into a single, coherent review
-2. **Deduplicate** similar issues - don't repeat the same finding
-3. **Rank** issues by severity: Critical > High > Medium > Low
-4. **Synthesize** - create a unified narrative, not just a list
-
-IMPORTANT RULES:
-- Do NOT add new findings that weren't mentioned by the reviewers
-- Do NOT make up issues - only synthesize what was provided
-- If reviewers disagree, note the disagreement
-- Be concise but comprehensive
-
-${languageInstruction}
-
-Output format:
-- Start with a brief summary (2-3 sentences)
-- List issues by severity with clear explanations
-- End with an overall assessment
-
-Do NOT include any JSON formatting. Output plain text only.`;
-}
-/**
- * Build judge user prompt from scanner results
- */
-function buildUserPrompt(scannerResults) {
-    const successfulResults = scannerResults.filter((r) => r.success);
-    if (successfulResults.length === 0) {
-        return 'No scanner results available. Please indicate that the review could not be completed.';
-    }
-    const reviewsText = successfulResults
-        .map((r) => `### Review from ${r.model}\n\n${r.output}`)
-        .join('\n\n---\n\n');
-    return `The following code reviews were generated by different AI models.
-Merge them into a single, comprehensive review.
-
-${reviewsText}
-
----
-
-Now provide a unified, merged code review that:
-1. Combines all unique findings
-2. Removes duplicates
-3. Ranks issues by severity
-4. Provides a clear overall assessment`;
-}
 /**
  * Run the judge to merge scanner outputs
  */
@@ -884,8 +874,8 @@ async function runJudge(config, scannerResults) {
     }
     try {
         const messages = [
-            { role: 'system', content: buildSystemPrompt(config.language) },
-            { role: 'user', content: buildUserPrompt(scannerResults) },
+            { role: 'system', content: (0,_prompts_js__WEBPACK_IMPORTED_MODULE_2__/* .buildJudgeSystemPrompt */ .LR)(config.language) },
+            { role: 'user', content: (0,_prompts_js__WEBPACK_IMPORTED_MODULE_2__/* .buildJudgeUserPrompt */ .Ps)(scannerResults) },
         ];
         const { content, tokensUsed } = await (0,_openrouter_client_js__WEBPACK_IMPORTED_MODULE_0__/* .callOpenRouter */ .O)(config.openrouter, config.model, messages, config.maxTokens, 0.2 // Lower temperature for more consistent merging
         );
@@ -919,6 +909,108 @@ async function runJudge(config, scannerResults) {
 
 /***/ }),
 
+/***/ 386:
+/***/ ((__unused_webpack___webpack_module__, __webpack_exports__, __nccwpck_require__) => {
+
+/* harmony export */ __nccwpck_require__.d(__webpack_exports__, {
+/* harmony export */   LR: () => (/* binding */ buildJudgeSystemPrompt),
+/* harmony export */   MQ: () => (/* binding */ buildScannerUserPrompt),
+/* harmony export */   Ps: () => (/* binding */ buildJudgeUserPrompt),
+/* harmony export */   eM: () => (/* binding */ buildScannerSystemPrompt)
+/* harmony export */ });
+/**
+ * Prompts Module - Centralized prompt management
+ * Spec-compliant prompts for scanner and judge
+ */
+/**
+ * Get language instruction for prompts
+ */
+function getLanguageInstruction(language) {
+    const lang = language.toLowerCase();
+    if (lang === 'tr' || lang === 'turkish') {
+        return 'Respond in Turkish.';
+    }
+    if (lang === 'en' || lang === 'english') {
+        return 'Respond in English.';
+    }
+    return `Respond in ${language}.`;
+}
+/**
+ * Build scanner system prompt (spec-compliant)
+ */
+function buildScannerSystemPrompt(language) {
+    const languageInstruction = getLanguageInstruction(language);
+    return `You are a senior software engineer performing a code review.
+
+Focus on:
+- Bugs
+- Security issues
+- Incorrect logic
+- Performance problems
+- Missing edge cases
+
+Be concise. Bullet points only. Do not repeat the diff. Do not invent issues.
+
+${languageInstruction}`;
+}
+/**
+ * Build scanner user prompt
+ */
+function buildScannerUserPrompt(diff) {
+    return `Review the following code diff:
+
+\`\`\`diff
+${diff}
+\`\`\``;
+}
+/**
+ * Build judge system prompt (spec-compliant)
+ */
+function buildJudgeSystemPrompt(language) {
+    const languageInstruction = getLanguageInstruction(language);
+    return `You are a senior code review aggregator.
+
+Your job:
+- Remove duplicates
+- Resolve contradictions
+- Discard weak or incorrect findings
+- Prioritize critical issues
+
+Rules:
+- Do NOT add new findings
+- Use only the provided inputs
+- Be concise and actionable
+
+${languageInstruction}`;
+}
+/**
+ * Build judge user prompt from scanner results
+ */
+function buildJudgeUserPrompt(scannerResults) {
+    const successfulResults = scannerResults.filter((r) => r.success);
+    if (successfulResults.length === 0) {
+        return 'No scanner results available. Indicate that the review could not be completed.';
+    }
+    const reviewsText = successfulResults
+        .map((r) => `### Review from ${r.model}\n\n${r.output}`)
+        .join('\n\n---\n\n');
+    return `The following code reviews were generated by different AI models.
+Merge them into a single, unified review.
+
+${reviewsText}
+
+---
+
+Provide a merged code review that:
+1. Removes duplicate findings
+2. Resolves contradictions
+3. Discards weak or incorrect findings
+4. Prioritizes critical issues`;
+}
+//# sourceMappingURL=prompts.js.map
+
+/***/ }),
+
 /***/ 583:
 /***/ ((__unused_webpack___webpack_module__, __webpack_exports__, __nccwpck_require__) => {
 
@@ -926,6 +1018,7 @@ async function runJudge(config, scannerResults) {
 /* harmony export */   D: () => (/* binding */ runScanners)
 /* harmony export */ });
 /* harmony import */ var _openrouter_client_js__WEBPACK_IMPORTED_MODULE_0__ = __nccwpck_require__(249);
+/* harmony import */ var _prompts_js__WEBPACK_IMPORTED_MODULE_2__ = __nccwpck_require__(386);
 /* harmony import */ var _utils_logger_js__WEBPACK_IMPORTED_MODULE_1__ = __nccwpck_require__(672);
 /**
  * Scanner Module - Parallel Multi-LLM Code Review
@@ -933,48 +1026,7 @@ async function runJudge(config, scannerResults) {
  */
 
 
-/**
- * Get language instruction for system prompt
- */
-function getLanguageInstruction(language) {
-    const lang = language.toLowerCase();
-    if (lang === 'turkish' || lang === 'tr') {
-        return 'You MUST respond in Turkish. Tüm çıktılarınız Türkçe olmalıdır.';
-    }
-    if (lang === 'english' || lang === 'en') {
-        return 'You MUST respond in English.';
-    }
-    return `You MUST respond in ${language}.`;
-}
-/**
- * Build scanner system prompt (language-aware)
- */
-function buildSystemPrompt(language) {
-    const languageInstruction = getLanguageInstruction(language);
-    return `You are an expert code reviewer. Analyze the provided code diff and identify:
 
-1. **Security Issues**: SQL injection, XSS, authentication flaws, secrets exposure
-2. **Bugs**: Logic errors, null pointer exceptions, race conditions
-3. **Performance**: N+1 queries, memory leaks, inefficient algorithms
-4. **Code Quality**: DRY violations, complexity issues, naming conventions
-
-${languageInstruction}
-
-Provide a concise but thorough review. Focus on actionable issues.
-Do NOT include any JSON formatting. Output plain text only.`;
-}
-/**
- * Build scanner user prompt
- */
-function buildUserPrompt(diff) {
-    return `Review the following code diff:
-
-\`\`\`diff
-${diff}
-\`\`\`
-
-Provide your code review focusing on security, bugs, performance, and code quality issues.`;
-}
 /**
  * Run a single scanner
  */
@@ -982,8 +1034,8 @@ async function runSingleScanner(config, model, diff) {
     const start = performance.now();
     try {
         const messages = [
-            { role: 'system', content: buildSystemPrompt(config.language) },
-            { role: 'user', content: buildUserPrompt(diff) },
+            { role: 'system', content: (0,_prompts_js__WEBPACK_IMPORTED_MODULE_2__/* .buildScannerSystemPrompt */ .eM)(config.language) },
+            { role: 'user', content: (0,_prompts_js__WEBPACK_IMPORTED_MODULE_2__/* .buildScannerUserPrompt */ .MQ)(diff) },
         ];
         const { content, tokensUsed } = await (0,_openrouter_client_js__WEBPACK_IMPORTED_MODULE_0__/* .callOpenRouter */ .O)(config.openrouter, model, messages, config.maxTokens, 0.3);
         const durationMs = Math.round(performance.now() - start);

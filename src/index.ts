@@ -23,6 +23,7 @@ interface ActionInputs {
   scannerModels: string[];
   judgeModel: string;
   language: string;
+  autoSelectModels: boolean;
   maxFiles: number;
   maxChars: number;
   timeoutMs: number;
@@ -32,10 +33,11 @@ interface ActionInputs {
 }
 
 /**
- * Get action input with default
+ * Get action input with default (kebab-case input names)
+ * GitHub Actions converts kebab-case to uppercase with underscores
  */
 function getInput(name: string, defaultValue: string): string {
-  // GitHub Actions passes inputs as INPUT_<NAME> environment variables
+  // GitHub Actions: openrouter-api-key -> INPUT_OPENROUTER_API_KEY
   const envName = `INPUT_${name.toUpperCase().replaceAll('-', '_')}`;
   return process.env[envName] ?? defaultValue;
 }
@@ -52,25 +54,86 @@ function getRequiredInput(name: string): string {
 }
 
 /**
+ * Parse scanner-models input (supports JSON array, multiline, or CSV)
+ */
+function parseScannerModels(input: string): string[] {
+  const trimmed = input.trim();
+
+  if (trimmed.length === 0) {
+    return [];
+  }
+
+  // Try JSON array first
+  if (trimmed.startsWith('[')) {
+    try {
+      const parsed = JSON.parse(trimmed) as unknown;
+      if (Array.isArray(parsed)) {
+        return parsed
+          .map((item) => String(item).trim())
+          .filter((item) => item.length > 0);
+      }
+    } catch {
+      // Not valid JSON, fall through to other methods
+    }
+  }
+
+  // Try multiline (contains newlines)
+  if (trimmed.includes('\n')) {
+    return trimmed
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0);
+  }
+
+  // Fallback to CSV
+  return trimmed
+    .split(',')
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0);
+}
+
+/**
  * Parse action inputs from environment
  */
 function parseInputs(): ActionInputs {
+  const autoSelectModels = getInput('auto-select-models', 'false').toLowerCase() === 'true';
+  const scannerModelsRaw = getInput('scanner-models', '');
+  const scannerModels = parseScannerModels(scannerModelsRaw);
+  const judgeModel = getInput('judge-model', '');
+
+  // Validate scanner-models
+  if (scannerModels.length === 0) {
+    if (autoSelectModels) {
+      // Auto-select not implemented in MVP
+      throw new Error(
+        'auto-select-models is not implemented in MVP. Please provide scanner-models explicitly.'
+      );
+    } else {
+      throw new Error(
+        "Required input 'scanner-models' is missing. Provide a list of models (CSV, multiline, or JSON array)."
+      );
+    }
+  }
+
+  // Validate judge-model
+  if (!judgeModel) {
+    throw new Error("Required input 'judge-model' is missing.");
+  }
+
   return {
-    openrouterApiKey: getRequiredInput('openrouter_api_key'),
-    githubToken: getRequiredInput('github_token'),
-    baseUrl: getInput('base_url', 'https://openrouter.ai/api/v1'),
-    scannerModels: getInput('scanner_models', 'openai/gpt-4o,anthropic/claude-3.5-sonnet,google/gemini-2.0-flash-exp')
-      .split(',')
-      .map((m) => m.trim())
-      .filter((m) => m.length > 0),
-    judgeModel: getInput('judge_model', 'anthropic/claude-3.5-sonnet'),
-    language: getInput('language', 'Turkish'),
-    maxFiles: Number.parseInt(getInput('max_files', '10'), 10),
-    maxChars: Number.parseInt(getInput('max_chars', '80000'), 10),
-    timeoutMs: Number.parseInt(getInput('timeout_ms', '180000'), 10),
-    maxTokensScanner: Number.parseInt(getInput('max_tokens_scanner', '600'), 10),
-    maxTokensJudge: Number.parseInt(getInput('max_tokens_judge', '800'), 10),
-    commentMarker: getInput('comment_marker', 'ENTERPRISE_AI_REVIEW'),
+    openrouterApiKey: getRequiredInput('openrouter-api-key'),
+    githubToken: getRequiredInput('github-token'),
+    baseUrl: getInput('base-url', 'https://openrouter.ai/api/v1'),
+    scannerModels,
+    judgeModel,
+    language: getInput('language', 'tr'),
+    autoSelectModels,
+    maxFiles: Number.parseInt(getInput('max-files', '10'), 10),
+    maxChars: Number.parseInt(getInput('max-chars', '80000'), 10),
+    timeoutMs: Number.parseInt(getInput('timeout-ms', '180000'), 10),
+    maxTokensScanner: Number.parseInt(getInput('max-tokens-scanner', '600'), 10),
+    maxTokensJudge: Number.parseInt(getInput('max-tokens-judge', '800'), 10),
+    commentMarker: getInput('comment-marker', 'ENTERPRISE_AI_REVIEW'),
   };
 }
 
@@ -210,7 +273,7 @@ async function run(): Promise<void> {
     try {
       process.env['GITHUB_TOKEN'] = process.env['INPUT_GITHUB_TOKEN'];
       const githubConfig = getConfigFromEnv();
-      const commentMarker = getInput('comment_marker', 'ENTERPRISE_AI_REVIEW');
+      const commentMarker = getInput('comment-marker', 'ENTERPRISE_AI_REVIEW');
 
       await postOrUpdateComment(
         githubConfig,

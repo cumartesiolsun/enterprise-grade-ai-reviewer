@@ -5,6 +5,7 @@
 
 import type { OpenRouterConfig, ChatMessage } from '../openrouter/client.js';
 import { callOpenRouter } from '../openrouter/client.js';
+import { buildScannerSystemPrompt, buildScannerUserPrompt } from './prompts.js';
 import { logger } from '../utils/logger.js';
 
 export interface ScannerResult {
@@ -24,55 +25,6 @@ export interface ScannerConfig {
 }
 
 /**
- * Get language instruction for system prompt
- */
-function getLanguageInstruction(language: string): string {
-  const lang = language.toLowerCase();
-
-  if (lang === 'turkish' || lang === 'tr') {
-    return 'You MUST respond in Turkish. Tüm çıktılarınız Türkçe olmalıdır.';
-  }
-
-  if (lang === 'english' || lang === 'en') {
-    return 'You MUST respond in English.';
-  }
-
-  return `You MUST respond in ${language}.`;
-}
-
-/**
- * Build scanner system prompt (language-aware)
- */
-function buildSystemPrompt(language: string): string {
-  const languageInstruction = getLanguageInstruction(language);
-
-  return `You are an expert code reviewer. Analyze the provided code diff and identify:
-
-1. **Security Issues**: SQL injection, XSS, authentication flaws, secrets exposure
-2. **Bugs**: Logic errors, null pointer exceptions, race conditions
-3. **Performance**: N+1 queries, memory leaks, inefficient algorithms
-4. **Code Quality**: DRY violations, complexity issues, naming conventions
-
-${languageInstruction}
-
-Provide a concise but thorough review. Focus on actionable issues.
-Do NOT include any JSON formatting. Output plain text only.`;
-}
-
-/**
- * Build scanner user prompt
- */
-function buildUserPrompt(diff: string): string {
-  return `Review the following code diff:
-
-\`\`\`diff
-${diff}
-\`\`\`
-
-Provide your code review focusing on security, bugs, performance, and code quality issues.`;
-}
-
-/**
  * Run a single scanner
  */
 async function runSingleScanner(
@@ -84,8 +36,8 @@ async function runSingleScanner(
 
   try {
     const messages: ChatMessage[] = [
-      { role: 'system', content: buildSystemPrompt(config.language) },
-      { role: 'user', content: buildUserPrompt(diff) },
+      { role: 'system', content: buildScannerSystemPrompt(config.language) },
+      { role: 'user', content: buildScannerUserPrompt(diff) },
     ];
 
     const { content, tokensUsed } = await callOpenRouter(

@@ -7,49 +7,51 @@ branding:
   color: 'purple'
 
 inputs:
-  openrouter_api_key:
+  openrouter-api-key:
     description: 'OpenRouter API key for LLM access'
     required: true
-  github_token:
+  github-token:
     description: 'GitHub token for API access'
     required: true
-  base_url:
+  base-url:
     description: 'OpenRouter API base URL'
     required: false
     default: 'https://openrouter.ai/api/v1'
-  scanner_models:
-    description: 'Comma-separated list of scanner models'
-    required: false
-    default: 'openai/gpt-4o,anthropic/claude-3.5-sonnet,google/gemini-2.0-flash-exp'
-  judge_model:
+  scanner-models:
+    description: 'Scanner models (CSV, multiline, or JSON array). Required unless auto-select-models is true.'
+    required: true
+  judge-model:
     description: 'Model to use for aggregation/judging'
-    required: false
-    default: 'anthropic/claude-3.5-sonnet'
+    required: true
   language:
-    description: 'Output language for AI review (Turkish, English, etc.)'
+    description: 'Output language for AI review (tr, en, etc.)'
     required: false
-    default: 'Turkish'
-  max_files:
+    default: 'tr'
+  auto-select-models:
+    description: 'Auto-select models based on PR size (not implemented in MVP - provide scanner-models)'
+    required: false
+    default: 'false'
+  max-files:
     description: 'Maximum number of files to review'
     required: false
     default: '10'
-  max_chars:
+  max-chars:
     description: 'Maximum characters in diff to review'
     required: false
     default: '80000'
-  timeout_ms:
+  timeout-ms:
     description: 'Timeout for API calls in milliseconds'
     required: false
     default: '180000'
-  max_tokens_scanner:
+  max-tokens-scanner:
     description: 'Maximum tokens for scanner responses'
     required: false
     default: '600'
-  max_tokens_judge:
+  max-tokens-judge:
     description: 'Maximum tokens for judge response'
     required: false
     default: '800'
-  comment_marker:
+  comment-marker:
     description: 'Marker for finding/updating PR comment'
     required: false
     default: 'ENTERPRISE_AI_REVIEW'
