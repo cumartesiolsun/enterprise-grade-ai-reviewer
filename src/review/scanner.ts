@@ -1,53 +1,129 @@
 /**
  * Scanner Module - Parallel Multi-LLM Code Review
+ * MVP v0.1 - Configurable models, parallel execution
  */
 
-import type { ScannerResult, ReviewConfig } from './types.js';
+import type { OpenRouterConfig, ChatMessage } from '../openrouter/client.js';
 import { callOpenRouter } from '../openrouter/client.js';
-import type { OutputLanguage } from './prompts.js';
-import { buildScannerPrompt, SCANNER_SYSTEM_PROMPT, truncateDiff } from './prompts.js';
-import { allSettled } from '../utils/concurrency.js';
 import { logger } from '../utils/logger.js';
+
+export interface ScannerResult {
+  model: string;
+  output: string;
+  tokensUsed: number;
+  durationMs: number;
+  success: boolean;
+  error?: string | undefined;
+}
+
+export interface ScannerConfig {
+  openrouter: OpenRouterConfig;
+  models: string[];
+  maxTokens: number;
+  language: string;
+}
+
+/**
+ * Get language instruction for system prompt
+ */
+function getLanguageInstruction(language: string): string {
+  const lang = language.toLowerCase();
+
+  if (lang === 'turkish' || lang === 'tr') {
+    return 'You MUST respond in Turkish. Tüm çıktılarınız Türkçe olmalıdır.';
+  }
+
+  if (lang === 'english' || lang === 'en') {
+    return 'You MUST respond in English.';
+  }
+
+  return `You MUST respond in ${language}.`;
+}
+
+/**
+ * Build scanner system prompt (language-aware)
+ */
+function buildSystemPrompt(language: string): string {
+  const languageInstruction = getLanguageInstruction(language);
+
+  return `You are an expert code reviewer. Analyze the provided code diff and identify:
+
+1. **Security Issues**: SQL injection, XSS, authentication flaws, secrets exposure
+2. **Bugs**: Logic errors, null pointer exceptions, race conditions
+3. **Performance**: N+1 queries, memory leaks, inefficient algorithms
+4. **Code Quality**: DRY violations, complexity issues, naming conventions
+
+${languageInstruction}
+
+Provide a concise but thorough review. Focus on actionable issues.
+Do NOT include any JSON formatting. Output plain text only.`;
+}
+
+/**
+ * Build scanner user prompt
+ */
+function buildUserPrompt(diff: string): string {
+  return `Review the following code diff:
+
+\`\`\`diff
+${diff}
+\`\`\`
+
+Provide your code review focusing on security, bugs, performance, and code quality issues.`;
+}
 
 /**
  * Run a single scanner
  */
 async function runSingleScanner(
+  config: ScannerConfig,
   model: string,
-  diff: string,
-  config: ReviewConfig,
-  language: OutputLanguage = 'en'
+  diff: string
 ): Promise<ScannerResult> {
   const start = performance.now();
 
   try {
-    const prompt = buildScannerPrompt(diff, language);
+    const messages: ChatMessage[] = [
+      { role: 'system', content: buildSystemPrompt(config.language) },
+      { role: 'user', content: buildUserPrompt(diff) },
+    ];
 
-    const { content, tokensUsed } = await callOpenRouter(model, prompt, {
-      systemPrompt: SCANNER_SYSTEM_PROMPT,
-      maxTokens: config.maxScannerTokens,
-      temperature: config.scannerTemperature,
+    const { content, tokensUsed } = await callOpenRouter(
+      config.openrouter,
+      model,
+      messages,
+      config.maxTokens,
+      0.3
+    );
+
+    const durationMs = Math.round(performance.now() - start);
+
+    logger.info(`Scanner finished: ${model}`, {
+      tokensUsed,
+      durationMs,
+      outputLength: content.length,
     });
 
     return {
       model,
-      findings: [], // Will be parsed by judge
-      rawResponse: content,
+      output: content,
       tokensUsed,
-      durationMs: Math.round(performance.now() - start),
+      durationMs,
       success: true,
     };
   } catch (error) {
-    logger.error(`Scanner failed: ${model}`, { error: String(error) });
+    const durationMs = Math.round(performance.now() - start);
+    const errorMessage = error instanceof Error ? error.message : String(error);
+
+    logger.error(`Scanner failed: ${model}`, { error: errorMessage, durationMs });
 
     return {
       model,
-      findings: [],
-      rawResponse: '',
+      output: '',
       tokensUsed: 0,
-      durationMs: Math.round(performance.now() - start),
+      durationMs,
       success: false,
-      error: error instanceof Error ? error.message : String(error),
+      error: errorMessage,
     };
   }
 }
@@ -57,61 +133,32 @@ async function runSingleScanner(
  * IMPORTANT: Scanners never see each other's output
  */
 export async function runScanners(
-  diff: string,
-  config: ReviewConfig,
-  language: OutputLanguage = 'en'
+  config: ScannerConfig,
+  diff: string
 ): Promise<ScannerResult[]> {
-  const truncatedDiff = truncateDiff(diff);
-
   logger.info('Starting parallel scanners', {
-    models: config.scannerModels,
+    models: config.models,
     diffLength: diff.length,
-    truncatedLength: truncatedDiff.length,
-    language,
+    language: config.language,
   });
 
-  const results = await allSettled(config.scannerModels, (model) =>
-    runSingleScanner(model, truncatedDiff, config, language)
+  // Run all scanners in parallel
+  const results = await Promise.all(
+    config.models.map((model) => runSingleScanner(config, model, diff))
   );
 
-  // Extract results
-  const scannerResults = results
-    .filter((r) => r.success && r.result)
-    .map((r) => r.result as ScannerResult);
-
   // Log summary
-  const successful = scannerResults.filter((r) => r.success).length;
-  const failed = scannerResults.filter((r) => !r.success).length;
-  const totalTokens = scannerResults.reduce((sum, r) => sum + r.tokensUsed, 0);
-  const totalDuration = Math.max(...scannerResults.map((r) => r.durationMs));
+  const successful = results.filter((r) => r.success).length;
+  const failed = results.filter((r) => !r.success).length;
+  const totalTokens = results.reduce((sum, r) => sum + r.tokensUsed, 0);
+  const maxDuration = Math.max(...results.map((r) => r.durationMs));
 
-  logger.info('Scanners completed', {
+  logger.info('All scanners completed', {
     successful,
     failed,
     totalTokens,
-    totalDurationMs: totalDuration,
+    maxDurationMs: maxDuration,
   });
 
-  return scannerResults;
-}
-
-/**
- * Run scanners with automatic model selection based on PR size
- */
-export async function runScannersWithAutoConfig(
-  diff: string,
-  models: string[],
-  options: Partial<ReviewConfig> = {},
-  language: OutputLanguage = 'en'
-): Promise<ScannerResult[]> {
-  const config: ReviewConfig = {
-    scannerModels: models,
-    judgeModel: 'claude-sonnet-judge',
-    maxScannerTokens: options.maxScannerTokens ?? 1000,
-    maxJudgeTokens: options.maxJudgeTokens ?? 2000,
-    scannerTemperature: options.scannerTemperature ?? 0.3,
-    judgeTemperature: options.judgeTemperature ?? 0.2,
-  };
-
-  return runScanners(diff, config, language);
+  return results;
 }

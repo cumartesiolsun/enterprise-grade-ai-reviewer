@@ -1,150 +1,178 @@
 /**
  * OpenRouter API Client
+ * MVP v0.1 - Exact spec implementation
  */
 
-import type {
-  OpenRouterClientConfig,
-  OpenRouterRequest,
-  OpenRouterResponse,
-  CallOptions,
-} from './types.js';
-import { withRetry } from '../utils/retry.js';
 import { logger } from '../utils/logger.js';
-import { getModelId } from '../config/models.js';
 
-const DEFAULT_BASE_URL = 'https://openrouter.ai/api/v1';
-const DEFAULT_TIMEOUT = 60000; // 60 seconds
-
-export class OpenRouterClient {
-  private apiKey: string;
-  private baseUrl: string;
-  private defaultMaxTokens: number;
-  private defaultTemperature: number;
-  private timeout: number;
-
-  constructor(config: OpenRouterClientConfig) {
-    this.apiKey = config.apiKey;
-    this.baseUrl = config.baseUrl ?? DEFAULT_BASE_URL;
-    this.defaultMaxTokens = config.defaultMaxTokens ?? 1000;
-    this.defaultTemperature = config.defaultTemperature ?? 0.3;
-    this.timeout = config.timeout ?? DEFAULT_TIMEOUT;
-  }
-
-  /**
-   * Make a chat completion request
-   */
-  async chat(
-    modelKey: string,
-    userPrompt: string,
-    options: CallOptions = {}
-  ): Promise<{ content: string; tokensUsed: number }> {
-    const modelId = getModelId(modelKey);
-    const messages: OpenRouterRequest['messages'] = [];
-
-    if (options.systemPrompt) {
-      messages.push({ role: 'system', content: options.systemPrompt });
-    }
-
-    messages.push({ role: 'user', content: userPrompt });
-
-    const request: OpenRouterRequest = {
-      model: modelId,
-      messages,
-      max_tokens: options.maxTokens ?? this.defaultMaxTokens,
-      temperature: options.temperature ?? this.defaultTemperature,
-    };
-
-    logger.debug('OpenRouter request', { model: modelId, promptLength: userPrompt.length });
-
-    const response = await this.makeRequest(request);
-
-    const content = response.choices[0]?.message.content ?? '';
-    const tokensUsed = response.usage.total_tokens;
-
-    logger.debug('OpenRouter response', {
-      model: modelId,
-      tokensUsed,
-      responseLength: content.length,
-    });
-
-    return { content, tokensUsed };
-  }
-
-  /**
-   * Make a raw API request with retry logic
-   */
-  private async makeRequest(request: OpenRouterRequest): Promise<OpenRouterResponse> {
-    return withRetry(
-      async () => {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), this.timeout);
-
-        try {
-          const response = await fetch(`${this.baseUrl}/chat/completions`, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'Authorization': `Bearer ${this.apiKey}`,
-              'HTTP-Referer': 'https://github.com/enterprise-grade-ai-reviewer',
-              'X-Title': 'Enterprise AI Reviewer',
-            },
-            body: JSON.stringify(request),
-            signal: controller.signal,
-          });
-
-          if (!response.ok) {
-            const errorText = await response.text();
-            throw new Error(`OpenRouter API error (${response.status}): ${errorText}`);
-          }
-
-          return (await response.json()) as OpenRouterResponse;
-        } finally {
-          clearTimeout(timeoutId);
-        }
-      },
-      {
-        maxAttempts: 3,
-        initialDelayMs: 1000,
-        isRetryable: (error) => {
-          if (error instanceof Error) {
-            const message = error.message.toLowerCase();
-            return (
-              message.includes('429') ||
-              message.includes('rate limit') ||
-              message.includes('timeout') ||
-              message.includes('503') ||
-              message.includes('502')
-            );
-          }
-          return false;
-        },
-      }
-    );
-  }
+export interface OpenRouterConfig {
+  apiKey: string;
+  baseUrl: string;
+  timeoutMs: number;
 }
 
-// Singleton instance factory
-let clientInstance: OpenRouterClient | null = null;
+export interface ChatMessage {
+  role: 'system' | 'user' | 'assistant';
+  content: string;
+}
 
-export function getOpenRouterClient(): OpenRouterClient {
-  if (!clientInstance) {
-    const apiKey = process.env['OPENROUTER_API_KEY'];
-    if (!apiKey) {
-      throw new Error('OPENROUTER_API_KEY environment variable is required');
-    }
-    clientInstance = new OpenRouterClient({ apiKey });
-  }
-  return clientInstance;
+export interface OpenRouterRequest {
+  model: string;
+  messages: ChatMessage[];
+  max_tokens: number;
+  temperature: number;
+}
+
+export interface OpenRouterResponse {
+  id: string;
+  choices: Array<{
+    message: {
+      role: string;
+      content: string;
+    };
+    finish_reason: string;
+  }>;
+  usage?: {
+    prompt_tokens: number;
+    completion_tokens: number;
+    total_tokens: number;
+  };
 }
 
 /**
- * Convenience function to call OpenRouter
+ * Check if error is retryable (429, 5xx, network/timeout)
+ */
+function isRetryableStatus(status: number): boolean {
+  // Rate limit
+  if (status === 429) return true;
+
+  // Server errors (5xx)
+  if (status >= 500 && status < 600) return true;
+
+  return false;
+}
+
+/**
+ * Sleep for specified milliseconds
+ */
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Call OpenRouter API with retry policy
+ * - Retry only for 429, 5xx, and network/timeout errors
+ * - Exponential backoff: 1s, 2s, 4s (max 3 tries)
+ * - Do not retry 400
  */
 export async function callOpenRouter(
-  modelKey: string,
-  prompt: string,
-  options: CallOptions = {}
+  config: OpenRouterConfig,
+  model: string,
+  messages: ChatMessage[],
+  maxTokens: number,
+  temperature: number = 0.3
 ): Promise<{ content: string; tokensUsed: number }> {
-  const client = getOpenRouterClient();
-  return client.chat(modelKey, prompt, options);
+  const url = `${config.baseUrl}/chat/completions`;
+  const maxRetries = 3;
+  const backoffDelays = [1000, 2000, 4000]; // 1s, 2s, 4s
+
+  const requestBody: OpenRouterRequest = {
+    model,
+    messages,
+    max_tokens: maxTokens,
+    temperature,
+  };
+
+  let lastError: Error | null = null;
+
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), config.timeoutMs);
+
+      logger.debug(`OpenRouter request attempt ${attempt + 1}/${maxRetries}`, {
+        model,
+        maxTokens,
+      });
+
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${config.apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(requestBody),
+        signal: controller.signal,
+      });
+
+      clearTimeout(timeoutId);
+
+      if (!response.ok) {
+        const errorText = await response.text();
+
+        // Don't retry 400 errors - fail immediately
+        if (response.status === 400) {
+          throw new Error(`OpenRouter API error 400: ${errorText}`);
+        }
+
+        // Check if retryable (429, 5xx)
+        if (isRetryableStatus(response.status) && attempt < maxRetries - 1) {
+          logger.warn(`OpenRouter retryable error ${response.status}, retrying...`, {
+            attempt: attempt + 1,
+            delay: backoffDelays[attempt],
+          });
+          await sleep(backoffDelays[attempt]!);
+          continue;
+        }
+
+        throw new Error(`OpenRouter API error ${response.status}: ${errorText}`);
+      }
+
+      const data = (await response.json()) as OpenRouterResponse;
+
+      if (!data.choices?.[0]?.message?.content) {
+        throw new Error('OpenRouter returned empty response');
+      }
+
+      const content = data.choices[0].message.content;
+      const tokensUsed = data.usage?.total_tokens ?? 0;
+
+      logger.debug(`OpenRouter response received`, {
+        model,
+        tokensUsed,
+        contentLength: content.length,
+      });
+
+      return { content, tokensUsed };
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error(String(error));
+
+      // Check if it's an abort/timeout error
+      const isTimeout = lastError.name === 'AbortError' ||
+                       lastError.message.includes('abort') ||
+                       lastError.message.includes('timeout');
+
+      // Check if it's a network error
+      const isNetworkError = lastError.message.includes('fetch') ||
+                            lastError.message.includes('network') ||
+                            lastError.message.includes('ECONNREFUSED') ||
+                            lastError.message.includes('ENOTFOUND');
+
+      // Retry for timeout or network errors
+      if ((isTimeout || isNetworkError) && attempt < maxRetries - 1) {
+        logger.warn(`OpenRouter network/timeout error, retrying...`, {
+          error: lastError.message,
+          attempt: attempt + 1,
+          delay: backoffDelays[attempt],
+        });
+        await sleep(backoffDelays[attempt]!);
+        continue;
+      }
+
+      // Not retryable or max retries reached
+      throw lastError;
+    }
+  }
+
+  throw lastError ?? new Error('OpenRouter request failed after retries');
 }

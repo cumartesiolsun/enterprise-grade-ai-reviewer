@@ -7,129 +7,53 @@ branding:
   color: 'purple'
 
 inputs:
-  github-token:
-    description: 'GitHub token for API access'
-    required: true
-  openrouter-api-key:
+  openrouter_api_key:
     description: 'OpenRouter API key for LLM access'
     required: true
-  language:
-    description: 'Output language for AI review (en, tr, ja, de, fr, es, pt, zh, ko)'
+  github_token:
+    description: 'GitHub token for API access'
+    required: true
+  base_url:
+    description: 'OpenRouter API base URL'
     required: false
-    default: 'en'
-  auto-select-models:
-    description: 'Automatically select models based on PR size (true/false)'
+    default: 'https://openrouter.ai/api/v1'
+  scanner_models:
+    description: 'Comma-separated list of scanner models'
     required: false
-    default: 'true'
-  scanner-models:
-    description: 'Comma-separated list of scanner models (overrides auto-selection)'
-    required: false
-  judge-model:
+    default: 'openai/gpt-4o,anthropic/claude-3.5-sonnet,google/gemini-2.0-flash-exp'
+  judge_model:
     description: 'Model to use for aggregation/judging'
     required: false
-  fail-on-critical:
-    description: 'Fail the action if critical issues are found (true/false)'
+    default: 'anthropic/claude-3.5-sonnet'
+  language:
+    description: 'Output language for AI review (Turkish, English, etc.)'
     required: false
-    default: 'true'
-  post-review:
-    description: 'Post review as PR comment (true/false)'
+    default: 'Turkish'
+  max_files:
+    description: 'Maximum number of files to review'
     required: false
-    default: 'true'
-  log-level:
-    description: 'Log level (debug/info/warn/error)'
+    default: '10'
+  max_chars:
+    description: 'Maximum characters in diff to review'
     required: false
-    default: 'info'
-
-outputs:
-  verdict:
-    description: 'Review verdict (approve/request-changes/comment)'
-  findings-count:
-    description: 'Total number of findings'
-  critical-count:
-    description: 'Number of critical findings'
-  high-count:
-    description: 'Number of high severity findings'
-  estimated-cost:
-    description: 'Estimated cost in USD'
-  review-json:
-    description: 'Full review result as JSON'
+    default: '80000'
+  timeout_ms:
+    description: 'Timeout for API calls in milliseconds'
+    required: false
+    default: '180000'
+  max_tokens_scanner:
+    description: 'Maximum tokens for scanner responses'
+    required: false
+    default: '600'
+  max_tokens_judge:
+    description: 'Maximum tokens for judge response'
+    required: false
+    default: '800'
+  comment_marker:
+    description: 'Marker for finding/updating PR comment'
+    required: false
+    default: 'ENTERPRISE_AI_REVIEW'
 
 runs:
-  using: 'composite'
-  steps:
-    - name: Setup Node.js
-      uses: actions/setup-node@v4
-      with:
-        node-version: '20'
-
-    - name: Install dependencies
-      shell: bash
-      run: |
-        cd ${{ github.action_path }}
-        npm ci
-
-    - name: Build
-      shell: bash
-      run: |
-        cd ${{ github.action_path }}
-        npm run build
-
-    - name: Run AI Review
-      id: review
-      shell: bash
-      env:
-        GITHUB_TOKEN: ${{ inputs.github-token }}
-        OPENROUTER_API_KEY: ${{ inputs.openrouter-api-key }}
-        GITHUB_REPOSITORY: ${{ github.repository }}
-        PR_NUMBER: ${{ github.event.pull_request.number }}
-        LOG_LEVEL: ${{ inputs.log-level }}
-      run: |
-        cd ${{ github.action_path }}
-
-        ARGS=""
-
-        if [ "${{ inputs.post-review }}" = "false" ]; then
-          ARGS="$ARGS --dry-run"
-        fi
-
-        if [ "${{ inputs.auto-select-models }}" = "false" ]; then
-          ARGS="$ARGS --no-auto-select"
-        fi
-
-        if [ -n "${{ inputs.scanner-models }}" ]; then
-          ARGS="$ARGS --models ${{ inputs.scanner-models }}"
-        fi
-
-        if [ -n "${{ inputs.judge-model }}" ]; then
-          ARGS="$ARGS --judge ${{ inputs.judge-model }}"
-        fi
-
-        # Add language parameter
-        ARGS="$ARGS --language ${{ inputs.language }}"
-
-        RESULT=$(node dist/index.js --output json $ARGS)
-
-        # Parse results
-        VERDICT=$(echo "$RESULT" | jq -r '.verdict')
-        FINDINGS=$(echo "$RESULT" | jq -r '.findings | length')
-        CRITICAL=$(echo "$RESULT" | jq -r '.stats.critical')
-        HIGH=$(echo "$RESULT" | jq -r '.stats.high')
-        COST=$(echo "$RESULT" | jq -r '.estimatedCost')
-
-        # Set outputs
-        echo "verdict=$VERDICT" >> $GITHUB_OUTPUT
-        echo "findings-count=$FINDINGS" >> $GITHUB_OUTPUT
-        echo "critical-count=$CRITICAL" >> $GITHUB_OUTPUT
-        echo "high-count=$HIGH" >> $GITHUB_OUTPUT
-        echo "estimated-cost=$COST" >> $GITHUB_OUTPUT
-
-        # Store full JSON (escape for multi-line)
-        echo "review-json<<EOF" >> $GITHUB_OUTPUT
-        echo "$RESULT" >> $GITHUB_OUTPUT
-        echo "EOF" >> $GITHUB_OUTPUT
-
-        # Fail if critical issues and configured to fail
-        if [ "${{ inputs.fail-on-critical }}" = "true" ] && [ "$CRITICAL" -gt 0 ]; then
-          echo "::error::Found $CRITICAL critical issues"
-          exit 1
-        fi
+  using: 'node20'
+  main: 'dist/index.js'

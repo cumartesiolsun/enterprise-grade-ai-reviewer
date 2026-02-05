@@ -1,11 +1,13 @@
 {
   "name": "enterprise-grade-ai-reviewer",
-  "version": "1.0.0",
+  "version": "0.1.0",
   "description": "Enterprise-grade AI code reviewer with multi-LLM parallel scanning and judge aggregation",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "type": "module",
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && ncc build dist/index.js -o dist --source-map --license licenses.txt",
+    "build:tsc": "tsc",
     "dev": "tsx src/index.ts",
     "start": "node dist/index.js",
     "lint": "eslint src/**/*.ts",
@@ -21,11 +23,11 @@
   "author": "",
   "license": "MIT",
   "dependencies": {
-    "@octokit/rest": "^21.0.0",
-    "zod": "^3.23.0"
+    "@octokit/rest": "^21.0.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
+    "@vercel/ncc": "^0.38.3",
     "tsx": "^4.7.0",
     "typescript": "^5.4.0"
   },

@@ -1,11 +1,42 @@
 /**
  * GitHub Diff Module - PR Diff Fetch and Normalization
+ * MVP v0.1 - With max_files and max_chars truncation
  */
 
 import { Octokit } from '@octokit/rest';
-import type { GitHubConfig, FileDiff, NormalizedDiff, PRInfo } from './types.js';
-import { calculatePRSize } from '../config/models.js';
 import { logger } from '../utils/logger.js';
+
+export interface GitHubConfig {
+  token: string;
+  owner: string;
+  repo: string;
+  prNumber: number;
+}
+
+export interface FileDiff {
+  filename: string;
+  status: 'added' | 'removed' | 'modified' | 'renamed' | 'copied' | 'changed';
+  additions: number;
+  deletions: number;
+  patch?: string | undefined;
+  previousFilename?: string | undefined;
+}
+
+export interface TruncationInfo {
+  filesFound: number;
+  filesReviewed: number;
+  originalChars: number;
+  truncatedChars: number;
+  wasTruncated: boolean;
+  truncationReason?: string | undefined;
+}
+
+export interface NormalizedDiff {
+  files: FileDiff[];
+  combinedDiff: string;
+  headSha: string;
+  truncation: TruncationInfo;
+}
 
 /**
  * Create Octokit instance
@@ -15,9 +46,9 @@ function createOctokit(token: string): Octokit {
 }
 
 /**
- * Fetch PR information
+ * Fetch PR head SHA
  */
-export async function getPRInfo(config: GitHubConfig): Promise<PRInfo> {
+export async function getPRHeadSha(config: GitHubConfig): Promise<string> {
   const octokit = createOctokit(config.token);
 
   const { data } = await octokit.pulls.get({
@@ -26,23 +57,7 @@ export async function getPRInfo(config: GitHubConfig): Promise<PRInfo> {
     pull_number: config.prNumber,
   });
 
-  return {
-    number: data.number,
-    title: data.title,
-    body: data.body,
-    state: data.state as PRInfo['state'],
-    base: {
-      ref: data.base.ref,
-      sha: data.base.sha,
-    },
-    head: {
-      ref: data.head.ref,
-      sha: data.head.sha,
-    },
-    user: {
-      login: data.user?.login ?? 'unknown',
-    },
-  };
+  return data.head.sha;
 }
 
 /**
@@ -69,20 +84,11 @@ export async function getPRFiles(config: GitHubConfig): Promise<FileDiff[]> {
 }
 
 /**
- * Normalize diff into a structured format
+ * Build combined diff string from files
  */
-export async function normalizeDiff(config: GitHubConfig): Promise<NormalizedDiff> {
-  logger.info('Fetching PR diff', {
-    owner: config.owner,
-    repo: config.repo,
-    prNumber: config.prNumber,
-  });
-
-  const [prInfo, files] = await Promise.all([getPRInfo(config), getPRFiles(config)]);
-
-  // Build combined diff
-  const combinedDiff = files
-    .filter((f) => f.patch) // Only files with patches
+function buildCombinedDiff(files: FileDiff[]): string {
+  return files
+    .filter((f) => f.patch)
     .map((f) => {
       const header = `diff --git a/${f.filename} b/${f.filename}`;
       const status =
@@ -97,43 +103,92 @@ export async function normalizeDiff(config: GitHubConfig): Promise<NormalizedDif
       return `${header}\n--- ${status} ---\n${f.patch}`;
     })
     .join('\n\n');
-
-  // Calculate size
-  const totalAdditions = files.reduce((sum, f) => sum + f.additions, 0);
-  const totalDeletions = files.reduce((sum, f) => sum + f.deletions, 0);
-  const prSize = calculatePRSize(files.length, totalAdditions, totalDeletions);
-
-  const normalized: NormalizedDiff = {
-    files,
-    combinedDiff,
-    metadata: {
-      title: prInfo.title,
-      body: prInfo.body,
-      baseRef: prInfo.base.ref,
-      headRef: prInfo.head.ref,
-      author: prInfo.user.login,
-    },
-    size: {
-      filesChanged: files.length,
-      totalAdditions,
-      totalDeletions,
-      category: prSize.category,
-    },
-  };
-
-  logger.info('PR diff normalized', {
-    filesChanged: normalized.size.filesChanged,
-    additions: normalized.size.totalAdditions,
-    deletions: normalized.size.totalDeletions,
-    category: normalized.size.category,
-    diffLength: combinedDiff.length,
-  });
-
-  return normalized;
 }
 
 /**
- * Get diff from GitHub Action context (environment variables)
+ * Normalize diff with max_files and max_chars truncation
+ */
+export async function normalizeDiff(
+  config: GitHubConfig,
+  maxFiles: number,
+  maxChars: number
+): Promise<NormalizedDiff> {
+  logger.info('Fetching PR diff', {
+    owner: config.owner,
+    repo: config.repo,
+    prNumber: config.prNumber,
+  });
+
+  const [headSha, allFiles] = await Promise.all([
+    getPRHeadSha(config),
+    getPRFiles(config),
+  ]);
+
+  const filesFound = allFiles.length;
+  let truncationReason: string | undefined;
+
+  // Step 1: Limit number of files
+  let files = allFiles;
+  if (files.length > maxFiles) {
+    // Prioritize files with patches, then by change size
+    files = files
+      .filter((f) => f.patch)
+      .sort((a, b) => (b.additions + b.deletions) - (a.additions + a.deletions))
+      .slice(0, maxFiles);
+    truncationReason = `Limited to ${maxFiles} files (found ${filesFound})`;
+    logger.info('Truncated file count', { found: filesFound, limited: maxFiles });
+  }
+
+  // Step 2: Build diff and check char limit
+  let combinedDiff = buildCombinedDiff(files);
+  const originalChars = combinedDiff.length;
+
+  if (combinedDiff.length > maxChars) {
+    // Truncate diff content
+    combinedDiff = combinedDiff.slice(0, maxChars);
+    // Find last complete file boundary to avoid mid-diff cut
+    const lastDiffMarker = combinedDiff.lastIndexOf('\ndiff --git');
+    if (lastDiffMarker > maxChars * 0.5) {
+      combinedDiff = combinedDiff.slice(0, lastDiffMarker);
+    }
+
+    const charReason = `Truncated to ${maxChars} chars (original ${originalChars})`;
+    truncationReason = truncationReason
+      ? `${truncationReason}; ${charReason}`
+      : charReason;
+
+    logger.info('Truncated diff content', {
+      original: originalChars,
+      truncated: combinedDiff.length
+    });
+  }
+
+  const truncation: TruncationInfo = {
+    filesFound,
+    filesReviewed: files.length,
+    originalChars,
+    truncatedChars: combinedDiff.length,
+    wasTruncated: !!truncationReason,
+    truncationReason,
+  };
+
+  logger.info('PR diff normalized', {
+    filesFound: truncation.filesFound,
+    filesReviewed: truncation.filesReviewed,
+    diffLength: combinedDiff.length,
+    wasTruncated: truncation.wasTruncated,
+  });
+
+  return {
+    files,
+    combinedDiff,
+    headSha,
+    truncation,
+  };
+}
+
+/**
+ * Get GitHub config from environment variables
  */
 export function getConfigFromEnv(): GitHubConfig {
   const token = process.env['GITHUB_TOKEN'];
@@ -162,38 +217,6 @@ export function getConfigFromEnv(): GitHubConfig {
     token,
     owner,
     repo,
-    prNumber: parseInt(prNumber, 10),
+    prNumber: Number.parseInt(prNumber, 10),
   };
-}
-
-/**
- * Filter files by extensions (for focused review)
- */
-export function filterFilesByExtension(
-  files: FileDiff[],
-  extensions: string[]
-): FileDiff[] {
-  const extSet = new Set(extensions.map((e) => (e.startsWith('.') ? e : `.${e}`)));
-  return files.filter((f) => {
-    const ext = f.filename.slice(f.filename.lastIndexOf('.'));
-    return extSet.has(ext);
-  });
-}
-
-/**
- * Filter out test files
- */
-export function filterOutTestFiles(files: FileDiff[]): FileDiff[] {
-  const testPatterns = [
-    /\.test\./,
-    /\.spec\./,
-    /__tests__/,
-    /\.stories\./,
-    /\.mock\./,
-    /test\//,
-    /tests\//,
-    /spec\//,
-  ];
-
-  return files.filter((f) => !testPatterns.some((p) => p.test(f.filename)));
 }
