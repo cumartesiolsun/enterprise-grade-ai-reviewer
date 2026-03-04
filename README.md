@@ -38,8 +38,9 @@ Traditional code review tools use a single AI model, which creates a single poin
                                     │
                                     ▼
 ┌─────────────────────────────────────────────────────────────────────┐
-│                     Single PR Comment                               │
-│           (marker-based update/create mechanism)                    │
+│                      Review Output                                  │
+│       summary: Single PR Comment (marker-based update)              │
+│       inline:  Per-line review comments on PR diff                  │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -84,7 +85,7 @@ jobs:
       contents: read
       pull-requests: write
     steps:
-      - uses: cumartesiolsun/enterprise-grade-ai-reviewer@v0.1.1
+      - uses: cumartesiolsun/enterprise-grade-ai-reviewer@v0.2.0
         with:
           openrouter-api-key: ${{ secrets.OPENROUTER_API_KEY }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
@@ -94,6 +95,29 @@ jobs:
             google/gemini-flash-1.5
           judge-model: anthropic/claude-3-sonnet
 ```
+
+### Inline Review Mode
+
+Use `review-mode: inline` to post findings as line-level comments directly on the PR diff instead of a single summary comment:
+
+```yaml
+      - uses: cumartesiolsun/enterprise-grade-ai-reviewer@v0.2.0
+        with:
+          openrouter-api-key: ${{ secrets.OPENROUTER_API_KEY }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          scanner-models: |
+            anthropic/claude-3-haiku
+            openai/gpt-4o-mini
+            google/gemini-flash-1.5
+          judge-model: anthropic/claude-3-sonnet
+          review-mode: inline
+```
+
+In inline mode:
+- The judge produces structured JSON findings with file paths and line numbers
+- Each finding is posted as an inline comment on the exact line in the PR diff
+- Findings that cannot be matched to the diff are included in the review summary
+- If JSON parsing fails, the action falls back to summary mode automatically
 
 ### Scanner Models Input Formats
 
@@ -130,9 +154,10 @@ scanner-models: '["anthropic/claude-3-haiku", "openai/gpt-4o-mini"]'
 | `max-files` | No | `10` | Maximum files to review |
 | `max-chars` | No | `80000` | Maximum characters in diff |
 | `timeout-ms` | No | `180000` | API call timeout (3 minutes) |
-| `max-tokens-scanner` | No | `600` | Max tokens per scanner response |
-| `max-tokens-judge` | No | `800` | Max tokens for judge response |
+| `max-tokens-scanner` | No | `2000` | Max tokens per scanner response |
+| `max-tokens-judge` | No | `4000` | Max tokens for judge response |
 | `comment-marker` | No | `ENTERPRISE_AI_REVIEW` | Marker for finding/updating PR comment |
+| `review-mode` | No | `summary` | Output mode: `summary` (single comment) or `inline` (per-line comments) |
 
 ## Model-Agnostic Design
 
@@ -180,12 +205,12 @@ API calls follow this retry policy:
 - **Backoff**: Exponential (1s, 2s, 4s)
 - **Max Retries**: 3
 
-## Limitations (MVP v0.1)
+## Limitations (v0.2)
 
 - `auto-select-models` is not implemented (placeholder for future versions)
 - No caching of results across runs
 - No support for review suggestions (only comments)
-- No support for file-level comments (only PR-level)
+- Inline mode depends on LLM producing correct file paths and line numbers
 - No cost estimation or budget controls
 
 ## Project Structure
@@ -207,11 +232,6 @@ src/
 ```
 
 ## Roadmap
-
-### v0.2
-- Auto-select models based on PR size and complexity
-- Cost estimation before execution
-- Support for file-level inline comments
 
 ### v0.3
 - Caching layer for repeated reviews

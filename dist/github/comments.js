@@ -1,8 +1,8 @@
 /**
- * GitHub Comments Module - Marker-based comment update/create
- * MVP v0.1 - Single PR comment with stable marker
+ * GitHub Comments Module - Summary and inline review posting
  */
 import { Octokit } from '@octokit/rest';
+import { parseDiffHunks, isLineInDiff } from './diff.js';
 import { logger } from '../utils/logger.js';
 /**
  * Create Octokit instance
@@ -109,5 +109,129 @@ export async function postOrUpdateComment(config, data, commentMarker) {
         });
         logger.info('Comment created successfully');
     }
+}
+/**
+ * Validate findings against actual PR diff files.
+ * Findings whose file/line doesn't match the diff are separated as "unmatched".
+ */
+function validateFindings(findings, files) {
+    const matched = [];
+    const unmatched = [];
+    for (const finding of findings) {
+        const diffFile = files.find((f) => f.filename === finding.file);
+        if (!diffFile?.patch) {
+            logger.warn('Finding file not in diff', { file: finding.file });
+            unmatched.push(finding);
+            continue;
+        }
+        const hunks = parseDiffHunks(diffFile.patch);
+        if (isLineInDiff(finding.line, hunks)) {
+            matched.push(finding);
+        }
+        else {
+            logger.warn('Finding line not in diff hunks', {
+                file: finding.file,
+                line: finding.line,
+            });
+            unmatched.push(finding);
+        }
+    }
+    return { matched, unmatched };
+}
+/**
+ * Get severity emoji for a finding.
+ */
+function getSeverityEmoji(severity) {
+    switch (severity) {
+        case 'critical':
+            return '🔴';
+        case 'warning':
+            return '🟡';
+        case 'info':
+            return '🔵';
+    }
+}
+/**
+ * Format an inline finding as a review comment body.
+ */
+function formatInlineComment(finding) {
+    return `${getSeverityEmoji(finding.severity)} **${finding.title}**\n\n${finding.body}`;
+}
+/**
+ * Format a finding as a markdown list item for summary sections.
+ */
+function formatFindingListItem(finding) {
+    const emoji = getSeverityEmoji(finding.severity);
+    return `- ${emoji} **${finding.title}** (\`${finding.file}:${finding.line}\`)\n  ${finding.body}`;
+}
+/**
+ * Build the review body (summary section) for an inline review.
+ */
+function buildInlineReviewBody(findings, unmatched, scannerResults, truncation) {
+    const bodyLines = [
+        '## Enterprise AI Review',
+        '',
+        `Found **${findings.length}** finding(s): ` +
+            `${findings.filter((f) => f.severity === 'critical').length} critical, ` +
+            `${findings.filter((f) => f.severity === 'warning').length} warning, ` +
+            `${findings.filter((f) => f.severity === 'info').length} info`,
+        '',
+        '### Sources',
+        '',
+    ];
+    for (const result of scannerResults) {
+        bodyLines.push(`- \`${result.model}\`: ${getStatusBadge(result)}`);
+    }
+    bodyLines.push('');
+    if (truncation.wasTruncated) {
+        bodyLines.push('### Notes', '', `⚠️ ${truncation.truncationReason}`, '');
+    }
+    if (unmatched.length > 0) {
+        bodyLines.push('### Additional Findings', '', '> Could not be placed inline (file/line not in current diff)', '');
+        for (const finding of unmatched) {
+            bodyLines.push(formatFindingListItem(finding), '');
+        }
+    }
+    return bodyLines.join('\n');
+}
+/**
+ * Post an inline PR review using pulls.createReview().
+ * Unmatched findings fall back to the review body summary.
+ */
+export async function postInlineReview(config, findings, files, headSha, scannerResults, truncation, commentMarker) {
+    const octokit = createOctokit(config.token);
+    const { matched, unmatched } = validateFindings(findings, files);
+    logger.info('Findings validation complete', {
+        total: findings.length,
+        matched: matched.length,
+        unmatched: unmatched.length,
+    });
+    if (matched.length > 0) {
+        const reviewComments = matched.map((f) => ({
+            path: f.file,
+            line: f.line,
+            side: 'RIGHT',
+            body: formatInlineComment(f),
+        }));
+        const reviewBody = buildInlineReviewBody(findings, unmatched, scannerResults, truncation);
+        logger.info('Posting inline review', { commentsCount: reviewComments.length, headSha });
+        await octokit.pulls.createReview({
+            owner: config.owner,
+            repo: config.repo,
+            pull_number: config.prNumber,
+            commit_id: headSha,
+            event: 'COMMENT',
+            body: reviewBody,
+            comments: reviewComments,
+        });
+        logger.info('Inline review posted successfully');
+        return;
+    }
+    // No matched findings — fall back to summary comment
+    logger.info('No matched inline findings, falling back to summary');
+    const judgeOutput = unmatched.length > 0
+        ? unmatched.map(formatFindingListItem).join('\n\n')
+        : 'No issues found in this PR. LGTM! ✅';
+    await postOrUpdateComment(config, { judgeOutput, scannerResults, truncation }, commentMarker);
 }
 //# sourceMappingURL=comments.js.map

@@ -1,14 +1,23 @@
 /**
  * Judge Module - Aggregation and Merge Logic
- * MVP v0.1 - Merge scanner outputs into ONE final review
+ * Supports summary (free-form) and inline (structured JSON) review modes
  */
 import type { OpenRouterConfig } from '../openrouter/client.js';
 import type { ScannerResult } from './scanner.js';
+export type ReviewMode = 'summary' | 'inline';
+export interface InlineFinding {
+    file: string;
+    line: number;
+    severity: 'critical' | 'warning' | 'info';
+    title: string;
+    body: string;
+}
 export interface JudgeConfig {
     openrouter: OpenRouterConfig;
     model: string;
     maxTokens: number;
     language: string;
+    reviewMode: ReviewMode;
 }
 export interface JudgeResult {
     output: string;
@@ -16,6 +25,7 @@ export interface JudgeResult {
     durationMs: number;
     success: boolean;
     error?: string | undefined;
+    findings?: InlineFinding[] | undefined;
 }
 /**
  * Run the judge to merge scanner outputs

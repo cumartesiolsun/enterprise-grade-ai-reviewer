@@ -181,22 +181,24 @@ __webpack_unused_export__ = defaultContentType
 /***/ ((__unused_webpack___webpack_module__, __webpack_exports__, __nccwpck_require__) => {
 
 /* harmony export */ __nccwpck_require__.d(__webpack_exports__, {
-/* harmony export */   I: () => (/* binding */ postOrUpdateComment)
+/* harmony export */   IL: () => (/* binding */ postOrUpdateComment),
+/* harmony export */   Oh: () => (/* binding */ postInlineReview)
 /* harmony export */ });
 /* unused harmony export buildCommentBody */
-/* harmony import */ var _octokit_rest__WEBPACK_IMPORTED_MODULE_1__ = __nccwpck_require__(380);
-/* harmony import */ var _utils_logger_js__WEBPACK_IMPORTED_MODULE_0__ = __nccwpck_require__(672);
+/* harmony import */ var _octokit_rest__WEBPACK_IMPORTED_MODULE_2__ = __nccwpck_require__(380);
+/* harmony import */ var _diff_js__WEBPACK_IMPORTED_MODULE_0__ = __nccwpck_require__(643);
+/* harmony import */ var _utils_logger_js__WEBPACK_IMPORTED_MODULE_1__ = __nccwpck_require__(672);
 /**
- * GitHub Comments Module - Marker-based comment update/create
- * MVP v0.1 - Single PR comment with stable marker
+ * GitHub Comments Module - Summary and inline review posting
  */
+
 
 
 /**
  * Create Octokit instance
  */
 function createOctokit(token) {
-    return new _octokit_rest__WEBPACK_IMPORTED_MODULE_1__/* .Octokit */ .E({ auth: token });
+    return new _octokit_rest__WEBPACK_IMPORTED_MODULE_2__/* .Octokit */ .E({ auth: token });
 }
 /**
  * Get status badge for scanner result
@@ -255,7 +257,7 @@ async function findExistingComment(octokit, config, commentMarker) {
     // Find comment containing the marker
     for (const comment of comments) {
         if (comment.body?.includes(markerPattern)) {
-            _utils_logger_js__WEBPACK_IMPORTED_MODULE_0__/* .logger */ .v.debug('Found existing comment', { commentId: comment.id });
+            _utils_logger_js__WEBPACK_IMPORTED_MODULE_1__/* .logger */ .v.debug('Found existing comment', { commentId: comment.id });
             return comment.id;
         }
     }
@@ -267,7 +269,7 @@ async function findExistingComment(octokit, config, commentMarker) {
 async function postOrUpdateComment(config, data, commentMarker) {
     const octokit = createOctokit(config.token);
     const body = buildCommentBody(data, commentMarker);
-    _utils_logger_js__WEBPACK_IMPORTED_MODULE_0__/* .logger */ .v.info('Checking for existing comment', {
+    _utils_logger_js__WEBPACK_IMPORTED_MODULE_1__/* .logger */ .v.info('Checking for existing comment', {
         owner: config.owner,
         repo: config.repo,
         prNumber: config.prNumber,
@@ -277,26 +279,150 @@ async function postOrUpdateComment(config, data, commentMarker) {
     const existingCommentId = await findExistingComment(octokit, config, commentMarker);
     if (existingCommentId) {
         // Update existing comment
-        _utils_logger_js__WEBPACK_IMPORTED_MODULE_0__/* .logger */ .v.info('Updating existing comment', { commentId: existingCommentId });
+        _utils_logger_js__WEBPACK_IMPORTED_MODULE_1__/* .logger */ .v.info('Updating existing comment', { commentId: existingCommentId });
         await octokit.issues.updateComment({
             owner: config.owner,
             repo: config.repo,
             comment_id: existingCommentId,
             body,
         });
-        _utils_logger_js__WEBPACK_IMPORTED_MODULE_0__/* .logger */ .v.info('Comment updated successfully');
+        _utils_logger_js__WEBPACK_IMPORTED_MODULE_1__/* .logger */ .v.info('Comment updated successfully');
     }
     else {
         // Create new comment
-        _utils_logger_js__WEBPACK_IMPORTED_MODULE_0__/* .logger */ .v.info('Creating new comment');
+        _utils_logger_js__WEBPACK_IMPORTED_MODULE_1__/* .logger */ .v.info('Creating new comment');
         await octokit.issues.createComment({
             owner: config.owner,
             repo: config.repo,
             issue_number: config.prNumber,
             body,
         });
-        _utils_logger_js__WEBPACK_IMPORTED_MODULE_0__/* .logger */ .v.info('Comment created successfully');
+        _utils_logger_js__WEBPACK_IMPORTED_MODULE_1__/* .logger */ .v.info('Comment created successfully');
     }
+}
+/**
+ * Validate findings against actual PR diff files.
+ * Findings whose file/line doesn't match the diff are separated as "unmatched".
+ */
+function validateFindings(findings, files) {
+    const matched = [];
+    const unmatched = [];
+    for (const finding of findings) {
+        const diffFile = files.find((f) => f.filename === finding.file);
+        if (!diffFile?.patch) {
+            _utils_logger_js__WEBPACK_IMPORTED_MODULE_1__/* .logger */ .v.warn('Finding file not in diff', { file: finding.file });
+            unmatched.push(finding);
+            continue;
+        }
+        const hunks = (0,_diff_js__WEBPACK_IMPORTED_MODULE_0__/* .parseDiffHunks */ .sV)(diffFile.patch);
+        if ((0,_diff_js__WEBPACK_IMPORTED_MODULE_0__/* .isLineInDiff */ .f6)(finding.line, hunks)) {
+            matched.push(finding);
+        }
+        else {
+            _utils_logger_js__WEBPACK_IMPORTED_MODULE_1__/* .logger */ .v.warn('Finding line not in diff hunks', {
+                file: finding.file,
+                line: finding.line,
+            });
+            unmatched.push(finding);
+        }
+    }
+    return { matched, unmatched };
+}
+/**
+ * Get severity emoji for a finding.
+ */
+function getSeverityEmoji(severity) {
+    switch (severity) {
+        case 'critical':
+            return '🔴';
+        case 'warning':
+            return '🟡';
+        case 'info':
+            return '🔵';
+    }
+}
+/**
+ * Format an inline finding as a review comment body.
+ */
+function formatInlineComment(finding) {
+    return `${getSeverityEmoji(finding.severity)} **${finding.title}**\n\n${finding.body}`;
+}
+/**
+ * Format a finding as a markdown list item for summary sections.
+ */
+function formatFindingListItem(finding) {
+    const emoji = getSeverityEmoji(finding.severity);
+    return `- ${emoji} **${finding.title}** (\`${finding.file}:${finding.line}\`)\n  ${finding.body}`;
+}
+/**
+ * Build the review body (summary section) for an inline review.
+ */
+function buildInlineReviewBody(findings, unmatched, scannerResults, truncation) {
+    const bodyLines = [
+        '## Enterprise AI Review',
+        '',
+        `Found **${findings.length}** finding(s): ` +
+            `${findings.filter((f) => f.severity === 'critical').length} critical, ` +
+            `${findings.filter((f) => f.severity === 'warning').length} warning, ` +
+            `${findings.filter((f) => f.severity === 'info').length} info`,
+        '',
+        '### Sources',
+        '',
+    ];
+    for (const result of scannerResults) {
+        bodyLines.push(`- \`${result.model}\`: ${getStatusBadge(result)}`);
+    }
+    bodyLines.push('');
+    if (truncation.wasTruncated) {
+        bodyLines.push('### Notes', '', `⚠️ ${truncation.truncationReason}`, '');
+    }
+    if (unmatched.length > 0) {
+        bodyLines.push('### Additional Findings', '', '> Could not be placed inline (file/line not in current diff)', '');
+        for (const finding of unmatched) {
+            bodyLines.push(formatFindingListItem(finding), '');
+        }
+    }
+    return bodyLines.join('\n');
+}
+/**
+ * Post an inline PR review using pulls.createReview().
+ * Unmatched findings fall back to the review body summary.
+ */
+async function postInlineReview(config, findings, files, headSha, scannerResults, truncation, commentMarker) {
+    const octokit = createOctokit(config.token);
+    const { matched, unmatched } = validateFindings(findings, files);
+    _utils_logger_js__WEBPACK_IMPORTED_MODULE_1__/* .logger */ .v.info('Findings validation complete', {
+        total: findings.length,
+        matched: matched.length,
+        unmatched: unmatched.length,
+    });
+    if (matched.length > 0) {
+        const reviewComments = matched.map((f) => ({
+            path: f.file,
+            line: f.line,
+            side: 'RIGHT',
+            body: formatInlineComment(f),
+        }));
+        const reviewBody = buildInlineReviewBody(findings, unmatched, scannerResults, truncation);
+        _utils_logger_js__WEBPACK_IMPORTED_MODULE_1__/* .logger */ .v.info('Posting inline review', { commentsCount: reviewComments.length, headSha });
+        await octokit.pulls.createReview({
+            owner: config.owner,
+            repo: config.repo,
+            pull_number: config.prNumber,
+            commit_id: headSha,
+            event: 'COMMENT',
+            body: reviewBody,
+            comments: reviewComments,
+        });
+        _utils_logger_js__WEBPACK_IMPORTED_MODULE_1__/* .logger */ .v.info('Inline review posted successfully');
+        return;
+    }
+    // No matched findings — fall back to summary comment
+    _utils_logger_js__WEBPACK_IMPORTED_MODULE_1__/* .logger */ .v.info('No matched inline findings, falling back to summary');
+    const judgeOutput = unmatched.length > 0
+        ? unmatched.map(formatFindingListItem).join('\n\n')
+        : 'No issues found in this PR. LGTM! ✅';
+    await postOrUpdateComment(config, { judgeOutput, scannerResults, truncation }, commentMarker);
 }
 //# sourceMappingURL=comments.js.map
 
@@ -307,7 +433,9 @@ async function postOrUpdateComment(config, data, commentMarker) {
 
 /* harmony export */ __nccwpck_require__.d(__webpack_exports__, {
 /* harmony export */   Al: () => (/* binding */ getConfigFromEnv),
-/* harmony export */   d1: () => (/* binding */ normalizeDiff)
+/* harmony export */   d1: () => (/* binding */ normalizeDiff),
+/* harmony export */   f6: () => (/* binding */ isLineInDiff),
+/* harmony export */   sV: () => (/* binding */ parseDiffHunks)
 /* harmony export */ });
 /* unused harmony exports getPRHeadSha, getPRFiles */
 /* harmony import */ var _octokit_rest__WEBPACK_IMPORTED_MODULE_1__ = __nccwpck_require__(380);
@@ -443,6 +571,30 @@ async function normalizeDiff(config, maxFiles, maxChars) {
     };
 }
 /**
+ * Parse diff hunk headers to extract valid new-side line ranges.
+ * Hunk headers: @@ -old_start,old_count +new_start,new_count @@
+ */
+function parseDiffHunks(patch) {
+    const ranges = [];
+    const hunkHeaderRegex = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/gm;
+    let match;
+    while ((match = hunkHeaderRegex.exec(patch)) !== null) {
+        const startLine = Number.parseInt(match[1], 10);
+        const count = match[2] !== undefined ? Number.parseInt(match[2], 10) : 1;
+        ranges.push({
+            startLine,
+            endLine: startLine + count - 1,
+        });
+    }
+    return ranges;
+}
+/**
+ * Check whether a line number falls within any diff hunk range.
+ */
+function isLineInDiff(line, hunks) {
+    return hunks.some((h) => line >= h.startLine && line <= h.endLine);
+}
+/**
  * Get GitHub config from environment variables
  */
 function getConfigFromEnv() {
@@ -566,6 +718,12 @@ function parseInputs() {
     if (!judgeModel) {
         throw new Error("Required input 'judge-model' is missing.");
     }
+    // Parse and validate review mode
+    const reviewModeRaw = getInput('review-mode', 'summary').toLowerCase();
+    if (reviewModeRaw !== 'summary' && reviewModeRaw !== 'inline') {
+        throw new Error(`Invalid review-mode '${reviewModeRaw}'. Must be 'summary' or 'inline'.`);
+    }
+    const reviewMode = reviewModeRaw;
     return {
         openrouterApiKey: getRequiredInput('openrouter-api-key'),
         githubToken: getRequiredInput('github-token'),
@@ -577,9 +735,10 @@ function parseInputs() {
         maxFiles: Number.parseInt(getInput('max-files', '10'), 10),
         maxChars: Number.parseInt(getInput('max-chars', '80000'), 10),
         timeoutMs: Number.parseInt(getInput('timeout-ms', '180000'), 10),
-        maxTokensScanner: Number.parseInt(getInput('max-tokens-scanner', '600'), 10),
-        maxTokensJudge: Number.parseInt(getInput('max-tokens-judge', '800'), 10),
+        maxTokensScanner: Number.parseInt(getInput('max-tokens-scanner', '2000'), 10),
+        maxTokensJudge: Number.parseInt(getInput('max-tokens-judge', '4000'), 10),
         commentMarker: getInput('comment-marker', 'ENTERPRISE_AI_REVIEW'),
+        reviewMode,
     };
 }
 /**
@@ -596,6 +755,7 @@ async function run() {
             language: inputs.language,
             maxFiles: inputs.maxFiles,
             maxChars: inputs.maxChars,
+            reviewMode: inputs.reviewMode,
         });
         // Set up GitHub config from environment
         // Override token with action input
@@ -622,7 +782,7 @@ async function run() {
         });
         if (diff.combinedDiff.length === 0) {
             _utils_logger_js__WEBPACK_IMPORTED_MODULE_4__/* .logger */ .v.warn('No diff content to review');
-            await (0,_github_comments_js__WEBPACK_IMPORTED_MODULE_1__/* .postOrUpdateComment */ .I)(githubConfig, {
+            await (0,_github_comments_js__WEBPACK_IMPORTED_MODULE_1__/* .postOrUpdateComment */ .IL)(githubConfig, {
                 judgeOutput: 'No code changes detected in this PR.',
                 scannerResults: [],
                 truncation: diff.truncation,
@@ -645,7 +805,7 @@ async function run() {
         });
         if (successfulScanners.length === 0) {
             _utils_logger_js__WEBPACK_IMPORTED_MODULE_4__/* .logger */ .v.error('All scanners failed');
-            await (0,_github_comments_js__WEBPACK_IMPORTED_MODULE_1__/* .postOrUpdateComment */ .I)(githubConfig, {
+            await (0,_github_comments_js__WEBPACK_IMPORTED_MODULE_1__/* .postOrUpdateComment */ .IL)(githubConfig, {
                 judgeOutput: 'Review failed - all scanner models returned errors.',
                 scannerResults: scannerResults,
                 truncation: diff.truncation,
@@ -658,19 +818,31 @@ async function run() {
             model: inputs.judgeModel,
             maxTokens: inputs.maxTokensJudge,
             language: inputs.language,
+            reviewMode: inputs.reviewMode,
         };
         const judgeResult = await (0,_review_judge_js__WEBPACK_IMPORTED_MODULE_3__/* .runJudge */ .R)(judgeConfig, scannerResults);
         _utils_logger_js__WEBPACK_IMPORTED_MODULE_4__/* .logger */ .v.info('Judge completed', {
             success: judgeResult.success,
             tokensUsed: judgeResult.tokensUsed,
             durationMs: judgeResult.durationMs,
+            reviewMode: inputs.reviewMode,
+            findingsCount: judgeResult.findings?.length,
         });
-        // Step 4: Post comment to GitHub
-        await (0,_github_comments_js__WEBPACK_IMPORTED_MODULE_1__/* .postOrUpdateComment */ .I)(githubConfig, {
-            judgeOutput: judgeResult.output,
-            scannerResults: scannerResults,
-            truncation: diff.truncation,
-        }, inputs.commentMarker);
+        // Step 4: Post results to GitHub
+        if (inputs.reviewMode === 'inline' && judgeResult.findings && judgeResult.findings.length > 0) {
+            await (0,_github_comments_js__WEBPACK_IMPORTED_MODULE_1__/* .postInlineReview */ .Oh)(githubConfig, judgeResult.findings, diff.files, diff.headSha, scannerResults, diff.truncation, inputs.commentMarker);
+        }
+        else {
+            // Summary mode, or inline mode with no parsed findings (fallback)
+            if (inputs.reviewMode === 'inline') {
+                _utils_logger_js__WEBPACK_IMPORTED_MODULE_4__/* .logger */ .v.warn('Inline mode: no findings parsed, falling back to summary');
+            }
+            await (0,_github_comments_js__WEBPACK_IMPORTED_MODULE_1__/* .postOrUpdateComment */ .IL)(githubConfig, {
+                judgeOutput: judgeResult.output,
+                scannerResults: scannerResults,
+                truncation: diff.truncation,
+            }, inputs.commentMarker);
+        }
         const totalDuration = Math.round(performance.now() - startTime);
         const totalTokens = scannerResults.reduce((sum, r) => sum + r.tokensUsed, 0) + judgeResult.tokensUsed;
         _utils_logger_js__WEBPACK_IMPORTED_MODULE_4__/* .logger */ .v.info('Review completed successfully', {
@@ -691,7 +863,7 @@ async function run() {
             }
             const githubConfig = (0,_github_diff_js__WEBPACK_IMPORTED_MODULE_0__/* .getConfigFromEnv */ .Al)();
             const commentMarker = getInput('comment-marker', 'ENTERPRISE_AI_REVIEW');
-            await (0,_github_comments_js__WEBPACK_IMPORTED_MODULE_1__/* .postOrUpdateComment */ .I)(githubConfig, {
+            await (0,_github_comments_js__WEBPACK_IMPORTED_MODULE_1__/* .postOrUpdateComment */ .IL)(githubConfig, {
                 judgeOutput: `Review failed with error: ${errorMessage}`,
                 scannerResults: [],
                 truncation: {
@@ -854,11 +1026,70 @@ async function callOpenRouter(config, model, messages, maxTokens, temperature = 
 /* harmony import */ var _utils_logger_js__WEBPACK_IMPORTED_MODULE_1__ = __nccwpck_require__(672);
 /**
  * Judge Module - Aggregation and Merge Logic
- * MVP v0.1 - Merge scanner outputs into ONE final review
+ * Supports summary (free-form) and inline (structured JSON) review modes
  */
 
 
 
+/**
+ * Attempt to parse the judge's JSON output into InlineFinding[].
+ * Returns undefined if parsing fails (caller falls back to summary).
+ */
+function parseInlineFindings(content) {
+    try {
+        let jsonStr = content.trim();
+        // Strip markdown code fences if present
+        const fenceRegex = /^```(?:json)?\s*\n?([\s\S]*?)\n?\s*```$/;
+        const fenceMatch = fenceRegex.exec(jsonStr);
+        if (fenceMatch?.[1]) {
+            jsonStr = fenceMatch[1];
+        }
+        const parsed = JSON.parse(jsonStr);
+        if (!Array.isArray(parsed)) {
+            _utils_logger_js__WEBPACK_IMPORTED_MODULE_1__/* .logger */ .v.warn('Judge inline output is not an array, falling back to summary');
+            return undefined;
+        }
+        const findings = [];
+        for (const item of parsed) {
+            if (typeof item === 'object' &&
+                item !== null &&
+                'file' in item &&
+                'line' in item &&
+                'severity' in item &&
+                'title' in item &&
+                'body' in item) {
+                const rec = item;
+                const severity = rec['severity'];
+                if (typeof rec['file'] === 'string' &&
+                    typeof rec['line'] === 'number' &&
+                    typeof rec['title'] === 'string' &&
+                    typeof rec['body'] === 'string' &&
+                    (severity === 'critical' || severity === 'warning' || severity === 'info')) {
+                    findings.push({
+                        file: rec['file'],
+                        line: rec['line'],
+                        severity,
+                        title: rec['title'],
+                        body: rec['body'],
+                    });
+                }
+                else {
+                    _utils_logger_js__WEBPACK_IMPORTED_MODULE_1__/* .logger */ .v.warn('Skipping finding with invalid fields', { item });
+                }
+            }
+            else {
+                _utils_logger_js__WEBPACK_IMPORTED_MODULE_1__/* .logger */ .v.warn('Skipping malformed finding item');
+            }
+        }
+        return findings;
+    }
+    catch (error) {
+        _utils_logger_js__WEBPACK_IMPORTED_MODULE_1__/* .logger */ .v.warn('Failed to parse judge inline output as JSON', {
+            error: error instanceof Error ? error.message : String(error),
+        });
+        return undefined;
+    }
+}
 /**
  * Run the judge to merge scanner outputs
  */
@@ -869,6 +1100,7 @@ async function runJudge(config, scannerResults) {
         judgeModel: config.model,
         scannersToMerge: successfulScanners.length,
         language: config.language,
+        reviewMode: config.reviewMode,
     });
     if (successfulScanners.length === 0) {
         _utils_logger_js__WEBPACK_IMPORTED_MODULE_1__/* .logger */ .v.error('No successful scanner results to judge');
@@ -881,23 +1113,39 @@ async function runJudge(config, scannerResults) {
         };
     }
     try {
+        // Select prompts based on review mode
+        const systemPrompt = config.reviewMode === 'inline'
+            ? (0,_prompts_js__WEBPACK_IMPORTED_MODULE_2__/* .buildJudgeSystemPromptInline */ .YB)(config.language)
+            : (0,_prompts_js__WEBPACK_IMPORTED_MODULE_2__/* .buildJudgeSystemPrompt */ .LR)(config.language);
+        const userPrompt = config.reviewMode === 'inline'
+            ? (0,_prompts_js__WEBPACK_IMPORTED_MODULE_2__/* .buildJudgeUserPromptInline */ .yt)(scannerResults)
+            : (0,_prompts_js__WEBPACK_IMPORTED_MODULE_2__/* .buildJudgeUserPrompt */ .Ps)(scannerResults);
         const messages = [
-            { role: 'system', content: (0,_prompts_js__WEBPACK_IMPORTED_MODULE_2__/* .buildJudgeSystemPrompt */ .LR)(config.language) },
-            { role: 'user', content: (0,_prompts_js__WEBPACK_IMPORTED_MODULE_2__/* .buildJudgeUserPrompt */ .Ps)(scannerResults) },
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: userPrompt },
         ];
-        const { content, tokensUsed } = await (0,_openrouter_client_js__WEBPACK_IMPORTED_MODULE_0__/* .callOpenRouter */ .O)(config.openrouter, config.model, messages, config.maxTokens, 0.2 // Lower temperature for more consistent merging
-        );
+        const { content, tokensUsed } = await (0,_openrouter_client_js__WEBPACK_IMPORTED_MODULE_0__/* .callOpenRouter */ .O)(config.openrouter, config.model, messages, config.maxTokens, 0.2);
         const durationMs = Math.round(performance.now() - start);
         _utils_logger_js__WEBPACK_IMPORTED_MODULE_1__/* .logger */ .v.info('Judge finished', {
             tokensUsed,
             durationMs,
             outputLength: content.length,
         });
+        // Parse findings for inline mode
+        let findings;
+        if (config.reviewMode === 'inline') {
+            findings = parseInlineFindings(content);
+            _utils_logger_js__WEBPACK_IMPORTED_MODULE_1__/* .logger */ .v.info('Inline findings parsed', {
+                findingsCount: findings?.length ?? 0,
+                parsedSuccessfully: findings !== undefined,
+            });
+        }
         return {
             output: content,
             tokensUsed,
             durationMs,
             success: true,
+            findings,
         };
     }
     catch (error) {
@@ -924,7 +1172,9 @@ async function runJudge(config, scannerResults) {
 /* harmony export */   LR: () => (/* binding */ buildJudgeSystemPrompt),
 /* harmony export */   MQ: () => (/* binding */ buildScannerUserPrompt),
 /* harmony export */   Ps: () => (/* binding */ buildJudgeUserPrompt),
-/* harmony export */   eM: () => (/* binding */ buildScannerSystemPrompt)
+/* harmony export */   YB: () => (/* binding */ buildJudgeSystemPromptInline),
+/* harmony export */   eM: () => (/* binding */ buildScannerSystemPrompt),
+/* harmony export */   yt: () => (/* binding */ buildJudgeUserPromptInline)
 /* harmony export */ });
 /**
  * Prompts Module - Centralized prompt management
@@ -1014,6 +1264,71 @@ Provide a merged code review that:
 2. Resolves contradictions
 3. Discards weak or incorrect findings
 4. Prioritizes critical issues`;
+}
+// --- Inline review mode prompts ---
+/**
+ * Build judge system prompt for inline review mode.
+ * Instructs the judge to output structured JSON findings.
+ */
+function buildJudgeSystemPromptInline(language) {
+    const languageInstruction = getLanguageInstruction(language);
+    return `You are a senior code review aggregator producing structured inline review comments.
+
+Your job:
+- Remove duplicates
+- Resolve contradictions
+- Discard weak or incorrect findings
+- Prioritize critical issues
+
+Rules:
+- Do NOT add new findings
+- Use only the provided inputs
+- Be concise and actionable
+- Output ONLY a valid JSON array (no markdown fencing, no extra text)
+
+Each element must have this exact shape:
+{
+  "file": "path/to/file.ts",
+  "line": 42,
+  "severity": "critical" | "warning" | "info",
+  "title": "Short title",
+  "body": "Detailed explanation with fix suggestion"
+}
+
+- "file" must be the exact file path from the diff headers
+- "line" must be a line number visible in the diff hunks
+- "severity": "critical" for bugs/security, "warning" for logic/performance, "info" for style/minor
+- "title": under 80 characters
+- "body": problem explanation and suggested fix
+
+If there are no findings worth reporting, return an empty array: []
+
+${languageInstruction}`;
+}
+/**
+ * Build judge user prompt for inline review mode.
+ */
+function buildJudgeUserPromptInline(scannerResults) {
+    const successfulResults = scannerResults.filter((r) => r.success);
+    if (successfulResults.length === 0) {
+        return 'No scanner results available. Return an empty JSON array: []';
+    }
+    const reviewsText = successfulResults
+        .map((r) => `### Review from ${r.model}\n\n${r.output}`)
+        .join('\n\n---\n\n');
+    return `The following code reviews were generated by different AI models.
+Merge them into a single set of structured inline review comments as a JSON array.
+
+${reviewsText}
+
+---
+
+Produce a JSON array of findings that:
+1. Removes duplicate findings
+2. Resolves contradictions
+3. Discards weak or incorrect findings
+4. Prioritizes critical issues
+5. Uses exact file paths and line numbers from the original diff`;
 }
 //# sourceMappingURL=prompts.js.map
 

@@ -187,6 +187,41 @@ export async function normalizeDiff(
   };
 }
 
+// --- Hunk validation utilities for inline review mode ---
+
+export interface DiffHunkRange {
+  startLine: number;
+  endLine: number;
+}
+
+/**
+ * Parse diff hunk headers to extract valid new-side line ranges.
+ * Hunk headers: @@ -old_start,old_count +new_start,new_count @@
+ */
+export function parseDiffHunks(patch: string): DiffHunkRange[] {
+  const ranges: DiffHunkRange[] = [];
+  const hunkHeaderRegex = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/gm;
+
+  let match: RegExpExecArray | null;
+  while ((match = hunkHeaderRegex.exec(patch)) !== null) {
+    const startLine = Number.parseInt(match[1]!, 10);
+    const count = match[2] !== undefined ? Number.parseInt(match[2], 10) : 1;
+    ranges.push({
+      startLine,
+      endLine: startLine + count - 1,
+    });
+  }
+
+  return ranges;
+}
+
+/**
+ * Check whether a line number falls within any diff hunk range.
+ */
+export function isLineInDiff(line: number, hunks: DiffHunkRange[]): boolean {
+  return hunks.some((h) => line >= h.startLine && line <= h.endLine);
+}
+
 /**
  * Get GitHub config from environment variables
  */

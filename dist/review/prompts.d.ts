@@ -19,4 +19,13 @@ export declare function buildJudgeSystemPrompt(language: string): string;
  * Build judge user prompt from scanner results
  */
 export declare function buildJudgeUserPrompt(scannerResults: ScannerResult[]): string;
+/**
+ * Build judge system prompt for inline review mode.
+ * Instructs the judge to output structured JSON findings.
+ */
+export declare function buildJudgeSystemPromptInline(language: string): string;
+/**
+ * Build judge user prompt for inline review mode.
+ */
+export declare function buildJudgeUserPromptInline(scannerResults: ScannerResult[]): string;
 //# sourceMappingURL=prompts.d.ts.map

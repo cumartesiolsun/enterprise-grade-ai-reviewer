@@ -5,11 +5,11 @@
 
 import { normalizeDiff, getConfigFromEnv } from './github/diff.js';
 import type { GitHubConfig } from './github/diff.js';
-import { postOrUpdateComment } from './github/comments.js';
+import { postOrUpdateComment, postInlineReview } from './github/comments.js';
 import { runScanners } from './review/scanner.js';
 import type { ScannerConfig } from './review/scanner.js';
 import { runJudge } from './review/judge.js';
-import type { JudgeConfig } from './review/judge.js';
+import type { JudgeConfig, ReviewMode } from './review/judge.js';
 import type { OpenRouterConfig } from './openrouter/client.js';
 import { logger } from './utils/logger.js';
 
@@ -30,6 +30,7 @@ interface ActionInputs {
   maxTokensScanner: number;
   maxTokensJudge: number;
   commentMarker: string;
+  reviewMode: ReviewMode;
 }
 
 /**
@@ -121,6 +122,15 @@ function parseInputs(): ActionInputs {
     throw new Error("Required input 'judge-model' is missing.");
   }
 
+  // Parse and validate review mode
+  const reviewModeRaw = getInput('review-mode', 'summary').toLowerCase();
+  if (reviewModeRaw !== 'summary' && reviewModeRaw !== 'inline') {
+    throw new Error(
+      `Invalid review-mode '${reviewModeRaw}'. Must be 'summary' or 'inline'.`
+    );
+  }
+  const reviewMode: ReviewMode = reviewModeRaw;
+
   return {
     openrouterApiKey: getRequiredInput('openrouter-api-key'),
     githubToken: getRequiredInput('github-token'),
@@ -132,9 +142,10 @@ function parseInputs(): ActionInputs {
     maxFiles: Number.parseInt(getInput('max-files', '10'), 10),
     maxChars: Number.parseInt(getInput('max-chars', '80000'), 10),
     timeoutMs: Number.parseInt(getInput('timeout-ms', '180000'), 10),
-    maxTokensScanner: Number.parseInt(getInput('max-tokens-scanner', '600'), 10),
-    maxTokensJudge: Number.parseInt(getInput('max-tokens-judge', '800'), 10),
+    maxTokensScanner: Number.parseInt(getInput('max-tokens-scanner', '2000'), 10),
+    maxTokensJudge: Number.parseInt(getInput('max-tokens-judge', '4000'), 10),
     commentMarker: getInput('comment-marker', 'ENTERPRISE_AI_REVIEW'),
+    reviewMode,
   };
 }
 
@@ -154,6 +165,7 @@ async function run(): Promise<void> {
       language: inputs.language,
       maxFiles: inputs.maxFiles,
       maxChars: inputs.maxChars,
+      reviewMode: inputs.reviewMode,
     });
 
     // Set up GitHub config from environment
@@ -236,6 +248,7 @@ async function run(): Promise<void> {
       model: inputs.judgeModel,
       maxTokens: inputs.maxTokensJudge,
       language: inputs.language,
+      reviewMode: inputs.reviewMode,
     };
 
     const judgeResult = await runJudge(judgeConfig, scannerResults);
@@ -244,18 +257,36 @@ async function run(): Promise<void> {
       success: judgeResult.success,
       tokensUsed: judgeResult.tokensUsed,
       durationMs: judgeResult.durationMs,
+      reviewMode: inputs.reviewMode,
+      findingsCount: judgeResult.findings?.length,
     });
 
-    // Step 4: Post comment to GitHub
-    await postOrUpdateComment(
-      githubConfig,
-      {
-        judgeOutput: judgeResult.output,
-        scannerResults: scannerResults,
-        truncation: diff.truncation,
-      },
-      inputs.commentMarker
-    );
+    // Step 4: Post results to GitHub
+    if (inputs.reviewMode === 'inline' && judgeResult.findings && judgeResult.findings.length > 0) {
+      await postInlineReview(
+        githubConfig,
+        judgeResult.findings,
+        diff.files,
+        diff.headSha,
+        scannerResults,
+        diff.truncation,
+        inputs.commentMarker
+      );
+    } else {
+      // Summary mode, or inline mode with no parsed findings (fallback)
+      if (inputs.reviewMode === 'inline') {
+        logger.warn('Inline mode: no findings parsed, falling back to summary');
+      }
+      await postOrUpdateComment(
+        githubConfig,
+        {
+          judgeOutput: judgeResult.output,
+          scannerResults: scannerResults,
+          truncation: diff.truncation,
+        },
+        inputs.commentMarker
+      );
+    }
 
     const totalDuration = Math.round(performance.now() - startTime);
     const totalTokens = scannerResults.reduce((sum, r) => sum + r.tokensUsed, 0) + judgeResult.tokensUsed;

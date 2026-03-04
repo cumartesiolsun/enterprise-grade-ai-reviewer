@@ -46,15 +46,19 @@ inputs:
   max-tokens-scanner:
     description: 'Maximum tokens for scanner responses'
     required: false
-    default: '600'
+    default: '2000'
   max-tokens-judge:
     description: 'Maximum tokens for judge response'
     required: false
-    default: '800'
+    default: '4000'
   comment-marker:
     description: 'Marker for finding/updating PR comment'
     required: false
     default: 'ENTERPRISE_AI_REVIEW'
+  review-mode:
+    description: 'Review output mode: "summary" posts a single PR comment, "inline" posts review comments on specific diff lines'
+    required: false
+    default: 'summary'
 
 runs:
   using: 'node20'

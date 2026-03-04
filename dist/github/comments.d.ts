@@ -1,9 +1,9 @@
 /**
- * GitHub Comments Module - Marker-based comment update/create
- * MVP v0.1 - Single PR comment with stable marker
+ * GitHub Comments Module - Summary and inline review posting
  */
-import type { GitHubConfig, TruncationInfo } from './diff.js';
+import type { GitHubConfig, TruncationInfo, FileDiff } from './diff.js';
 import type { ScannerResult } from '../review/scanner.js';
+import type { InlineFinding } from '../review/judge.js';
 export interface ReviewCommentData {
     judgeOutput: string;
     scannerResults: ScannerResult[];
@@ -17,4 +17,9 @@ export declare function buildCommentBody(data: ReviewCommentData, commentMarker:
  * Post or update PR comment using marker-based detection
  */
 export declare function postOrUpdateComment(config: GitHubConfig, data: ReviewCommentData, commentMarker: string): Promise<void>;
+/**
+ * Post an inline PR review using pulls.createReview().
+ * Unmatched findings fall back to the review body summary.
+ */
+export declare function postInlineReview(config: GitHubConfig, findings: InlineFinding[], files: FileDiff[], headSha: string, scannerResults: ScannerResult[], truncation: TruncationInfo, commentMarker: string): Promise<void>;
 //# sourceMappingURL=comments.d.ts.map

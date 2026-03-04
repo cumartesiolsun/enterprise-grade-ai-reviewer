@@ -42,6 +42,19 @@ export declare function getPRFiles(config: GitHubConfig): Promise<FileDiff[]>;
  * Normalize diff with max_files and max_chars truncation
  */
 export declare function normalizeDiff(config: GitHubConfig, maxFiles: number, maxChars: number): Promise<NormalizedDiff>;
+export interface DiffHunkRange {
+    startLine: number;
+    endLine: number;
+}
+/**
+ * Parse diff hunk headers to extract valid new-side line ranges.
+ * Hunk headers: @@ -old_start,old_count +new_start,new_count @@
+ */
+export declare function parseDiffHunks(patch: string): DiffHunkRange[];
+/**
+ * Check whether a line number falls within any diff hunk range.
+ */
+export declare function isLineInDiff(line: number, hunks: DiffHunkRange[]): boolean;
 /**
  * Get GitHub config from environment variables
  */

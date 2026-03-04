@@ -1,19 +1,35 @@
 /**
  * Judge Module - Aggregation and Merge Logic
- * MVP v0.1 - Merge scanner outputs into ONE final review
+ * Supports summary (free-form) and inline (structured JSON) review modes
  */
 
 import type { OpenRouterConfig, ChatMessage } from '../openrouter/client.js';
 import { callOpenRouter } from '../openrouter/client.js';
 import type { ScannerResult } from './scanner.js';
-import { buildJudgeSystemPrompt, buildJudgeUserPrompt } from './prompts.js';
+import {
+  buildJudgeSystemPrompt,
+  buildJudgeUserPrompt,
+  buildJudgeSystemPromptInline,
+  buildJudgeUserPromptInline,
+} from './prompts.js';
 import { logger } from '../utils/logger.js';
+
+export type ReviewMode = 'summary' | 'inline';
+
+export interface InlineFinding {
+  file: string;
+  line: number;
+  severity: 'critical' | 'warning' | 'info';
+  title: string;
+  body: string;
+}
 
 export interface JudgeConfig {
   openrouter: OpenRouterConfig;
   model: string;
   maxTokens: number;
   language: string;
+  reviewMode: ReviewMode;
 }
 
 export interface JudgeResult {
@@ -22,6 +38,75 @@ export interface JudgeResult {
   durationMs: number;
   success: boolean;
   error?: string | undefined;
+  findings?: InlineFinding[] | undefined;
+}
+
+/**
+ * Attempt to parse the judge's JSON output into InlineFinding[].
+ * Returns undefined if parsing fails (caller falls back to summary).
+ */
+function parseInlineFindings(content: string): InlineFinding[] | undefined {
+  try {
+    let jsonStr = content.trim();
+
+    // Strip markdown code fences if present
+    const fenceRegex = /^```(?:json)?\s*\n?([\s\S]*?)\n?\s*```$/;
+    const fenceMatch = fenceRegex.exec(jsonStr);
+    if (fenceMatch?.[1]) {
+      jsonStr = fenceMatch[1];
+    }
+
+    const parsed = JSON.parse(jsonStr) as unknown;
+
+    if (!Array.isArray(parsed)) {
+      logger.warn('Judge inline output is not an array, falling back to summary');
+      return undefined;
+    }
+
+    const findings: InlineFinding[] = [];
+
+    for (const item of parsed) {
+      if (
+        typeof item === 'object' &&
+        item !== null &&
+        'file' in item &&
+        'line' in item &&
+        'severity' in item &&
+        'title' in item &&
+        'body' in item
+      ) {
+        const rec = item as Record<string, unknown>;
+        const severity = rec['severity'];
+
+        if (
+          typeof rec['file'] === 'string' &&
+          typeof rec['line'] === 'number' &&
+          typeof rec['title'] === 'string' &&
+          typeof rec['body'] === 'string' &&
+          (severity === 'critical' || severity === 'warning' || severity === 'info')
+        ) {
+          findings.push({
+            file: rec['file'],
+            line: rec['line'],
+            severity,
+            title: rec['title'],
+            body: rec['body'],
+          } as InlineFinding);
+        } else {
+          logger.warn('Skipping finding with invalid fields', { item });
+        }
+      } else {
+        logger.warn('Skipping malformed finding item');
+      }
+    }
+
+    return findings;
+  } catch (error) {
+    logger.warn('Failed to parse judge inline output as JSON', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return undefined;
+  }
 }
 
 /**
@@ -39,6 +124,7 @@ export async function runJudge(
     judgeModel: config.model,
     scannersToMerge: successfulScanners.length,
     language: config.language,
+    reviewMode: config.reviewMode,
   });
 
   if (successfulScanners.length === 0) {
@@ -53,9 +139,18 @@ export async function runJudge(
   }
 
   try {
+    // Select prompts based on review mode
+    const systemPrompt = config.reviewMode === 'inline'
+      ? buildJudgeSystemPromptInline(config.language)
+      : buildJudgeSystemPrompt(config.language);
+
+    const userPrompt = config.reviewMode === 'inline'
+      ? buildJudgeUserPromptInline(scannerResults)
+      : buildJudgeUserPrompt(scannerResults);
+
     const messages: ChatMessage[] = [
-      { role: 'system', content: buildJudgeSystemPrompt(config.language) },
-      { role: 'user', content: buildJudgeUserPrompt(scannerResults) },
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: userPrompt },
     ];
 
     const { content, tokensUsed } = await callOpenRouter(
@@ -63,7 +158,7 @@ export async function runJudge(
       config.model,
       messages,
       config.maxTokens,
-      0.2 // Lower temperature for more consistent merging
+      0.2
     );
 
     const durationMs = Math.round(performance.now() - start);
@@ -74,11 +169,22 @@ export async function runJudge(
       outputLength: content.length,
     });
 
+    // Parse findings for inline mode
+    let findings: InlineFinding[] | undefined;
+    if (config.reviewMode === 'inline') {
+      findings = parseInlineFindings(content);
+      logger.info('Inline findings parsed', {
+        findingsCount: findings?.length ?? 0,
+        parsedSuccessfully: findings !== undefined,
+      });
+    }
+
     return {
       output: content,
       tokensUsed,
       durationMs,
       success: true,
+      findings,
     };
   } catch (error) {
     const durationMs = Math.round(performance.now() - start);
