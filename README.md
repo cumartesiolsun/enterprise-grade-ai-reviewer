@@ -85,7 +85,7 @@ jobs:
       contents: read
       pull-requests: write
     steps:
-      - uses: cumartesiolsun/enterprise-grade-ai-reviewer@v0.2.0
+      - uses: cumartesiolsun/enterprise-grade-ai-reviewer@latest
         with:
           openrouter-api-key: ${{ secrets.OPENROUTER_API_KEY }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
@@ -101,7 +101,7 @@ jobs:
 Use `review-mode: inline` to post findings as line-level comments directly on the PR diff instead of a single summary comment:
 
 ```yaml
-      - uses: cumartesiolsun/enterprise-grade-ai-reviewer@v0.2.0
+      - uses: cumartesiolsun/enterprise-grade-ai-reviewer@latest
         with:
           openrouter-api-key: ${{ secrets.OPENROUTER_API_KEY }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
