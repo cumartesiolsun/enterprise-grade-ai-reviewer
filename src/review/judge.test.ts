@@ -1,0 +1,338 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import type { ScannerResult } from './scanner.js';
+import type { JudgeConfig, InlineFinding } from './judge.js';
+
+vi.mock('../openrouter/client.js', () => ({
+  callOpenRouter: vi.fn(),
+}));
+
+vi.mock('../utils/logger.js', () => ({
+  logger: {
+    debug: vi.fn(),
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+  },
+}));
+
+vi.mock('./prompts.js', () => ({
+  buildJudgeSystemPrompt: vi.fn(() => 'system-summary'),
+  buildJudgeUserPrompt: vi.fn(() => 'user-summary'),
+  buildJudgeSystemPromptInline: vi.fn(() => 'system-inline'),
+  buildJudgeUserPromptInline: vi.fn(() => 'user-inline'),
+}));
+
+import { runJudge } from './judge.js';
+import { callOpenRouter } from '../openrouter/client.js';
+
+const mockedCallOpenRouter = vi.mocked(callOpenRouter);
+
+function makeConfig(overrides: Partial<JudgeConfig> = {}): JudgeConfig {
+  return {
+    openrouter: { apiKey: 'test-key', baseUrl: 'https://api.test', timeoutMs: 30000 },
+    model: 'test/judge-model',
+    maxTokens: 4000,
+    language: 'en',
+    reviewMode: 'summary',
+    ...overrides,
+  };
+}
+
+function makeSuccessfulScanner(model: string = 'scanner-1', output: string = 'Found issue X'): ScannerResult {
+  return {
+    model,
+    output,
+    tokensUsed: 100,
+    durationMs: 500,
+    success: true,
+    status: 'OK',
+  };
+}
+
+function makeFailedScanner(model: string = 'scanner-fail'): ScannerResult {
+  return {
+    model,
+    output: '',
+    tokensUsed: 0,
+    durationMs: 100,
+    success: false,
+    status: 'FAILED',
+    error: 'API error',
+  };
+}
+
+describe('runJudge', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('returns error result when no successful scanner results', async () => {
+    const config = makeConfig();
+    const scannerResults = [makeFailedScanner('model-a'), makeFailedScanner('model-b')];
+
+    const result = await runJudge(config, scannerResults);
+
+    expect(result.success).toBe(false);
+    expect(result.error).toBe('No successful scanner results');
+    expect(result.tokensUsed).toBe(0);
+    expect(result.output).toContain('all scanners failed');
+    expect(mockedCallOpenRouter).not.toHaveBeenCalled();
+  });
+
+  it('returns error result when scanner results array is empty', async () => {
+    const config = makeConfig();
+
+    const result = await runJudge(config, []);
+
+    expect(result.success).toBe(false);
+    expect(result.error).toBe('No successful scanner results');
+    expect(mockedCallOpenRouter).not.toHaveBeenCalled();
+  });
+
+  it('summary mode: calls callOpenRouter and returns output', async () => {
+    const config = makeConfig({ reviewMode: 'summary' });
+    const scannerResults = [makeSuccessfulScanner()];
+
+    mockedCallOpenRouter.mockResolvedValueOnce({
+      content: 'Summary review output',
+      tokensUsed: 250,
+    });
+
+    const result = await runJudge(config, scannerResults);
+
+    expect(result.success).toBe(true);
+    expect(result.output).toBe('Summary review output');
+    expect(result.tokensUsed).toBe(250);
+    expect(result.findings).toBeUndefined();
+    expect(mockedCallOpenRouter).toHaveBeenCalledOnce();
+    expect(mockedCallOpenRouter).toHaveBeenCalledWith(
+      config.openrouter,
+      config.model,
+      expect.arrayContaining([
+        expect.objectContaining({ role: 'system' }),
+        expect.objectContaining({ role: 'user' }),
+      ]),
+      config.maxTokens,
+      0.2,
+    );
+  });
+
+  it('inline mode with valid JSON array: parses findings correctly', async () => {
+    const config = makeConfig({ reviewMode: 'inline' });
+    const scannerResults = [makeSuccessfulScanner()];
+    const findings: InlineFinding[] = [
+      { file: 'src/app.ts', line: 10, severity: 'critical', title: 'SQL Injection', body: 'Use parameterized queries.' },
+      { file: 'src/utils.ts', line: 42, severity: 'warning', title: 'Unused variable', body: 'Remove unused variable x.' },
+      { file: 'src/config.ts', line: 5, severity: 'info', title: 'Consider const', body: 'Use const instead of let.' },
+    ];
+
+    mockedCallOpenRouter.mockResolvedValueOnce({
+      content: JSON.stringify(findings),
+      tokensUsed: 300,
+    });
+
+    const result = await runJudge(config, scannerResults);
+
+    expect(result.success).toBe(true);
+    expect(result.findings).toBeDefined();
+    expect(result.findings).toHaveLength(3);
+    expect(result.findings![0]).toEqual({
+      file: 'src/app.ts',
+      line: 10,
+      severity: 'critical',
+      title: 'SQL Injection',
+      body: 'Use parameterized queries.',
+    });
+    expect(result.findings![1]!.severity).toBe('warning');
+    expect(result.findings![2]!.severity).toBe('info');
+  });
+
+  it('inline mode with JSON wrapped in markdown fences: strips fences and parses', async () => {
+    const config = makeConfig({ reviewMode: 'inline' });
+    const scannerResults = [makeSuccessfulScanner()];
+    const findings: InlineFinding[] = [
+      { file: 'src/handler.ts', line: 15, severity: 'warning', title: 'Error handling', body: 'Missing try-catch block.' },
+    ];
+    const fencedContent = '```json\n' + JSON.stringify(findings) + '\n```';
+
+    mockedCallOpenRouter.mockResolvedValueOnce({
+      content: fencedContent,
+      tokensUsed: 200,
+    });
+
+    const result = await runJudge(config, scannerResults);
+
+    expect(result.success).toBe(true);
+    expect(result.findings).toBeDefined();
+    expect(result.findings).toHaveLength(1);
+    expect(result.findings![0]).toEqual(findings[0]);
+  });
+
+  it('inline mode with fences without json tag: strips fences and parses', async () => {
+    const config = makeConfig({ reviewMode: 'inline' });
+    const scannerResults = [makeSuccessfulScanner()];
+    const findings: InlineFinding[] = [
+      { file: 'src/index.ts', line: 1, severity: 'info', title: 'Import order', body: 'Sort imports alphabetically.' },
+    ];
+    const fencedContent = '```\n' + JSON.stringify(findings) + '\n```';
+
+    mockedCallOpenRouter.mockResolvedValueOnce({
+      content: fencedContent,
+      tokensUsed: 150,
+    });
+
+    const result = await runJudge(config, scannerResults);
+
+    expect(result.success).toBe(true);
+    expect(result.findings).toBeDefined();
+    expect(result.findings).toHaveLength(1);
+    expect(result.findings![0]!.title).toBe('Import order');
+  });
+
+  it('inline mode with invalid JSON: returns findings as undefined', async () => {
+    const config = makeConfig({ reviewMode: 'inline' });
+    const scannerResults = [makeSuccessfulScanner()];
+
+    mockedCallOpenRouter.mockResolvedValueOnce({
+      content: 'This is not valid JSON at all { broken',
+      tokensUsed: 100,
+    });
+
+    const result = await runJudge(config, scannerResults);
+
+    expect(result.success).toBe(true);
+    expect(result.findings).toBeUndefined();
+    expect(result.output).toBe('This is not valid JSON at all { broken');
+  });
+
+  it('inline mode with non-array JSON: returns findings as undefined', async () => {
+    const config = makeConfig({ reviewMode: 'inline' });
+    const scannerResults = [makeSuccessfulScanner()];
+
+    mockedCallOpenRouter.mockResolvedValueOnce({
+      content: JSON.stringify({ file: 'src/app.ts', line: 10, severity: 'critical', title: 'Bug', body: 'Fix it' }),
+      tokensUsed: 100,
+    });
+
+    const result = await runJudge(config, scannerResults);
+
+    expect(result.success).toBe(true);
+    expect(result.findings).toBeUndefined();
+  });
+
+  it('inline mode with findings missing required fields: skips invalid items', async () => {
+    const config = makeConfig({ reviewMode: 'inline' });
+    const scannerResults = [makeSuccessfulScanner()];
+
+    const mixedFindings = [
+      { file: 'src/valid.ts', line: 10, severity: 'critical', title: 'Valid finding', body: 'This is valid.' },
+      { file: 'src/missing-body.ts', line: 5, severity: 'warning', title: 'Missing body' },
+      { severity: 'info', title: 'No file or line', body: 'Missing file and line.' },
+      { file: 'src/missing-line.ts', severity: 'warning', title: 'No line', body: 'Missing line field.' },
+      { file: 'src/missing-title.ts', line: 20, severity: 'info', body: 'Missing title field.' },
+      'not an object',
+      null,
+      42,
+    ];
+
+    mockedCallOpenRouter.mockResolvedValueOnce({
+      content: JSON.stringify(mixedFindings),
+      tokensUsed: 200,
+    });
+
+    const result = await runJudge(config, scannerResults);
+
+    expect(result.success).toBe(true);
+    expect(result.findings).toBeDefined();
+    expect(result.findings).toHaveLength(1);
+    expect(result.findings![0]!.file).toBe('src/valid.ts');
+  });
+
+  it('inline mode with invalid severity value: skips that finding', async () => {
+    const config = makeConfig({ reviewMode: 'inline' });
+    const scannerResults = [makeSuccessfulScanner()];
+
+    const findings = [
+      { file: 'src/a.ts', line: 1, severity: 'critical', title: 'Valid', body: 'Good.' },
+      { file: 'src/b.ts', line: 2, severity: 'high', title: 'Invalid severity', body: 'Bad severity.' },
+      { file: 'src/c.ts', line: 3, severity: 'error', title: 'Also invalid', body: 'Not a valid severity.' },
+      { file: 'src/d.ts', line: 4, severity: 'INFO', title: 'Case sensitive', body: 'Uppercase INFO is invalid.' },
+      { file: 'src/e.ts', line: 5, severity: 'warning', title: 'Another valid', body: 'Good too.' },
+    ];
+
+    mockedCallOpenRouter.mockResolvedValueOnce({
+      content: JSON.stringify(findings),
+      tokensUsed: 200,
+    });
+
+    const result = await runJudge(config, scannerResults);
+
+    expect(result.success).toBe(true);
+    expect(result.findings).toBeDefined();
+    expect(result.findings).toHaveLength(2);
+    expect(result.findings![0]!.severity).toBe('critical');
+    expect(result.findings![1]!.severity).toBe('warning');
+  });
+
+  it('handles callOpenRouter throwing an error gracefully', async () => {
+    const config = makeConfig({ reviewMode: 'summary' });
+    const scannerResults = [makeSuccessfulScanner()];
+
+    mockedCallOpenRouter.mockRejectedValueOnce(new Error('OpenRouter API error 500: Internal Server Error'));
+
+    const result = await runJudge(config, scannerResults);
+
+    expect(result.success).toBe(false);
+    expect(result.error).toBe('OpenRouter API error 500: Internal Server Error');
+    expect(result.output).toContain('Review aggregation failed');
+    expect(result.tokensUsed).toBe(0);
+  });
+
+  it('handles callOpenRouter throwing a non-Error gracefully', async () => {
+    const config = makeConfig({ reviewMode: 'inline' });
+    const scannerResults = [makeSuccessfulScanner()];
+
+    mockedCallOpenRouter.mockRejectedValueOnce('string error');
+
+    const result = await runJudge(config, scannerResults);
+
+    expect(result.success).toBe(false);
+    expect(result.error).toBe('string error');
+    expect(result.output).toContain('Review aggregation failed');
+  });
+
+  it('inline mode with empty array: returns empty findings array', async () => {
+    const config = makeConfig({ reviewMode: 'inline' });
+    const scannerResults = [makeSuccessfulScanner()];
+
+    mockedCallOpenRouter.mockResolvedValueOnce({
+      content: '[]',
+      tokensUsed: 50,
+    });
+
+    const result = await runJudge(config, scannerResults);
+
+    expect(result.success).toBe(true);
+    expect(result.findings).toBeDefined();
+    expect(result.findings).toHaveLength(0);
+  });
+
+  it('filters out failed scanners and only uses successful ones', async () => {
+    const config = makeConfig({ reviewMode: 'summary' });
+    const scannerResults = [
+      makeSuccessfulScanner('model-a', 'Output A'),
+      makeFailedScanner('model-b'),
+      makeSuccessfulScanner('model-c', 'Output C'),
+    ];
+
+    mockedCallOpenRouter.mockResolvedValueOnce({
+      content: 'Merged output',
+      tokensUsed: 300,
+    });
+
+    const result = await runJudge(config, scannerResults);
+
+    expect(result.success).toBe(true);
+    expect(mockedCallOpenRouter).toHaveBeenCalledOnce();
+  });
+});
