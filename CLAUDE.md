@@ -62,14 +62,14 @@ All configuration comes from GitHub Action inputs (defined in `action.yml`), rea
 This project uses a floating `latest` tag so consumers can pin to `@latest`. On every release:
 
 ```bash
-git tag v0.X.Y                      # 1. Sabit version tag'i oluştur
-git tag -f latest v0.X.Y            # 2. latest'i yeni version'a taşı
-git push origin v0.X.Y latest -f    # 3. İkisini birden push et
+git tag v0.X.Y                      # 1. Create fixed version tag
+git tag -f latest v0.X.Y            # 2. Move latest to the new version
+git push origin v0.X.Y latest -f    # 3. Push both tags
 ```
 
-- **Sabit tag'ler** (`v0.1.0`, `v0.2.0`, …) asla taşınmaz — rollback ve changelog için kalır.
-- **`latest` tag'i** her release'de en son sabit tag'in commit'ine force-update edilir.
-- `npm run build` ve `dist/` commit'i **tag atmadan önce** yapılmalıdır.
+- **Fixed tags** (`v0.1.0`, `v0.2.0`, …) are never moved — they stay for rollback and changelog purposes.
+- **`latest` tag** is force-updated to the latest fixed tag's commit on every release.
+- Run `npm run build` and commit `dist/` **before** tagging.
 
 ## Code Conventions
 
