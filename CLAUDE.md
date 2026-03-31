@@ -15,9 +15,9 @@ npm run dev            # Run with tsx (requires INPUT_* env vars)
 npm run start          # Run bundled dist/index.js
 npm run lint           # ESLint
 npm run typecheck      # tsc --noEmit
+npm run test           # Vitest (run once)
+npm run test:watch     # Vitest (watch mode)
 ```
-
-No test framework is configured. There are no test files.
 
 ## Development Workflow
 
