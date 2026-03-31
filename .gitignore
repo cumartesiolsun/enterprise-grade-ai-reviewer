@@ -80,3 +80,5 @@ secrets.json
 
 # GitHub Action local testing
 .act/
+
+.claude/settings.local.json
