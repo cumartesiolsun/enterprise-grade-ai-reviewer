@@ -57,6 +57,20 @@ PR Trigger → Diff Normalization → Parallel Scanners → Judge Aggregation �
 
 All configuration comes from GitHub Action inputs (defined in `action.yml`), read as `INPUT_*` environment variables. Default language is Turkish (`tr`). Default `review-mode` is `summary`. Token defaults: scanner 2000, judge 4000.
 
+## Release Workflow
+
+This project uses a floating `latest` tag so consumers can pin to `@latest`. On every release:
+
+```bash
+git tag v0.X.Y                      # 1. Sabit version tag'i oluştur
+git tag -f latest v0.X.Y            # 2. latest'i yeni version'a taşı
+git push origin v0.X.Y latest -f    # 3. İkisini birden push et
+```
+
+- **Sabit tag'ler** (`v0.1.0`, `v0.2.0`, …) asla taşınmaz — rollback ve changelog için kalır.
+- **`latest` tag'i** her release'de en son sabit tag'in commit'ine force-update edilir.
+- `npm run build` ve `dist/` commit'i **tag atmadan önce** yapılmalıdır.
+
 ## Code Conventions
 
 - camelCase for variables/functions, PascalCase for types/interfaces
