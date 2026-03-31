@@ -70,7 +70,7 @@ describe('runJudge', () => {
     const config = makeConfig();
     const scannerResults = [makeFailedScanner('model-a'), makeFailedScanner('model-b')];
 
-    const result = await runJudge(config, scannerResults);
+    const result = await runJudge(config, scannerResults, 'mock diff content');
 
     expect(result.success).toBe(false);
     expect(result.error).toBe('No successful scanner results');
@@ -82,7 +82,7 @@ describe('runJudge', () => {
   it('returns error result when scanner results array is empty', async () => {
     const config = makeConfig();
 
-    const result = await runJudge(config, []);
+    const result = await runJudge(config, [], 'mock diff content');
 
     expect(result.success).toBe(false);
     expect(result.error).toBe('No successful scanner results');
@@ -98,7 +98,7 @@ describe('runJudge', () => {
       tokensUsed: 250,
     });
 
-    const result = await runJudge(config, scannerResults);
+    const result = await runJudge(config, scannerResults, 'mock diff content');
 
     expect(result.success).toBe(true);
     expect(result.output).toBe('Summary review output');
@@ -131,7 +131,7 @@ describe('runJudge', () => {
       tokensUsed: 300,
     });
 
-    const result = await runJudge(config, scannerResults);
+    const result = await runJudge(config, scannerResults, 'mock diff content');
 
     expect(result.success).toBe(true);
     expect(result.findings).toBeDefined();
@@ -160,7 +160,7 @@ describe('runJudge', () => {
       tokensUsed: 200,
     });
 
-    const result = await runJudge(config, scannerResults);
+    const result = await runJudge(config, scannerResults, 'mock diff content');
 
     expect(result.success).toBe(true);
     expect(result.findings).toBeDefined();
@@ -181,7 +181,7 @@ describe('runJudge', () => {
       tokensUsed: 150,
     });
 
-    const result = await runJudge(config, scannerResults);
+    const result = await runJudge(config, scannerResults, 'mock diff content');
 
     expect(result.success).toBe(true);
     expect(result.findings).toBeDefined();
@@ -202,7 +202,7 @@ describe('runJudge', () => {
       tokensUsed: 200,
     });
 
-    const result = await runJudge(config, scannerResults);
+    const result = await runJudge(config, scannerResults, 'mock diff content');
 
     expect(result.success).toBe(true);
     expect(result.findings).toBeDefined();
@@ -223,7 +223,7 @@ describe('runJudge', () => {
       tokensUsed: 200,
     });
 
-    const result = await runJudge(config, scannerResults);
+    const result = await runJudge(config, scannerResults, 'mock diff content');
 
     expect(result.success).toBe(true);
     expect(result.findings).toBeDefined();
@@ -240,7 +240,7 @@ describe('runJudge', () => {
       tokensUsed: 100,
     });
 
-    const result = await runJudge(config, scannerResults);
+    const result = await runJudge(config, scannerResults, 'mock diff content');
 
     expect(result.success).toBe(true);
     expect(result.findings).toBeUndefined();
@@ -255,7 +255,7 @@ describe('runJudge', () => {
       tokensUsed: 100,
     });
 
-    const result = await runJudge(config, scannerResults);
+    const result = await runJudge(config, scannerResults, 'mock diff content');
 
     expect(result.success).toBe(true);
     expect(result.findings).toBeUndefined();
@@ -281,7 +281,7 @@ describe('runJudge', () => {
       tokensUsed: 200,
     });
 
-    const result = await runJudge(config, scannerResults);
+    const result = await runJudge(config, scannerResults, 'mock diff content');
 
     expect(result.success).toBe(true);
     expect(result.findings).toBeDefined();
@@ -306,7 +306,7 @@ describe('runJudge', () => {
       tokensUsed: 200,
     });
 
-    const result = await runJudge(config, scannerResults);
+    const result = await runJudge(config, scannerResults, 'mock diff content');
 
     expect(result.success).toBe(true);
     expect(result.findings).toBeDefined();
@@ -321,7 +321,7 @@ describe('runJudge', () => {
 
     mockedCallOpenRouter.mockRejectedValueOnce(new Error('OpenRouter API error 500: Internal Server Error'));
 
-    const result = await runJudge(config, scannerResults);
+    const result = await runJudge(config, scannerResults, 'mock diff content');
 
     expect(result.success).toBe(false);
     expect(result.error).toBe('OpenRouter API error 500: Internal Server Error');
@@ -335,7 +335,7 @@ describe('runJudge', () => {
 
     mockedCallOpenRouter.mockRejectedValueOnce('string error');
 
-    const result = await runJudge(config, scannerResults);
+    const result = await runJudge(config, scannerResults, 'mock diff content');
 
     expect(result.success).toBe(false);
     expect(result.error).toBe('string error');
@@ -351,7 +351,7 @@ describe('runJudge', () => {
       tokensUsed: 50,
     });
 
-    const result = await runJudge(config, scannerResults);
+    const result = await runJudge(config, scannerResults, 'mock diff content');
 
     expect(result.success).toBe(true);
     expect(result.findings).toBeDefined();
@@ -371,7 +371,7 @@ describe('runJudge', () => {
       tokensUsed: 300,
     });
 
-    const result = await runJudge(config, scannerResults);
+    const result = await runJudge(config, scannerResults, 'mock diff content');
 
     expect(result.success).toBe(true);
     expect(mockedCallOpenRouter).toHaveBeenCalledOnce();
@@ -390,7 +390,7 @@ describe('runJudge', () => {
       tokensUsed: 200,
     });
 
-    const result = await runJudge(config, scannerResults);
+    const result = await runJudge(config, scannerResults, 'mock diff content');
 
     expect(result.findings).toBeDefined();
     expect(result.findings![0]!.sources).toEqual(['model-a', 'model-b']);
@@ -409,7 +409,7 @@ describe('runJudge', () => {
       tokensUsed: 100,
     });
 
-    const result = await runJudge(config, scannerResults);
+    const result = await runJudge(config, scannerResults, 'mock diff content');
 
     expect(result.findings).toBeDefined();
     expect(result.findings![0]!.sources).toBeUndefined();
@@ -427,7 +427,7 @@ describe('runJudge', () => {
       tokensUsed: 100,
     });
 
-    const result = await runJudge(config, scannerResults);
+    const result = await runJudge(config, scannerResults, 'mock diff content');
 
     expect(result.findings![0]!.sources).toEqual(['model-a', 'model-b']);
   });

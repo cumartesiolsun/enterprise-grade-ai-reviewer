@@ -252,7 +252,7 @@ async function run(): Promise<void> {
       reviewMode: inputs.reviewMode,
     };
 
-    const judgeResult = await runJudge(judgeConfig, scannerResults);
+    const judgeResult = await runJudge(judgeConfig, scannerResults, diff.combinedDiff);
 
     logger.info('Judge completed', {
       success: judgeResult.success,

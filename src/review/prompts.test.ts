@@ -67,7 +67,7 @@ describe('buildJudgeUserPrompt', () => {
       makeScannerResult({ model: 'model-a', output: 'Finding A' }),
       makeScannerResult({ model: 'model-b', output: 'Finding B' }),
     ];
-    const result = buildJudgeUserPrompt(results);
+    const result = buildJudgeUserPrompt(results, 'mock diff');
     expect(result).toContain('model-a');
     expect(result).toContain('Finding A');
     expect(result).toContain('model-b');
@@ -78,7 +78,7 @@ describe('buildJudgeUserPrompt', () => {
     const results: ScannerResult[] = [
       makeScannerResult({ success: false, status: 'FAILED', output: '' }),
     ];
-    const result = buildJudgeUserPrompt(results);
+    const result = buildJudgeUserPrompt(results, 'mock diff');
     expect(result).toContain('No scanner results available');
   });
 
@@ -87,7 +87,7 @@ describe('buildJudgeUserPrompt', () => {
       makeScannerResult({ model: 'good-model', output: 'Valid finding', success: true }),
       makeScannerResult({ model: 'bad-model', output: 'Error output', success: false, status: 'FAILED' }),
     ];
-    const result = buildJudgeUserPrompt(results);
+    const result = buildJudgeUserPrompt(results, 'mock diff');
     expect(result).toContain('good-model');
     expect(result).toContain('Valid finding');
     expect(result).not.toContain('bad-model');
@@ -113,7 +113,7 @@ describe('buildJudgeUserPromptInline', () => {
     const results: ScannerResult[] = [
       makeScannerResult({ model: 'inline-model', output: 'Inline finding' }),
     ];
-    const result = buildJudgeUserPromptInline(results);
+    const result = buildJudgeUserPromptInline(results, 'mock diff');
     expect(result).toContain('JSON array');
     expect(result).toContain('inline-model');
     expect(result).toContain('Inline finding');
@@ -123,7 +123,7 @@ describe('buildJudgeUserPromptInline', () => {
     const results: ScannerResult[] = [
       makeScannerResult({ success: false, status: 'FAILED', output: '' }),
     ];
-    const result = buildJudgeUserPromptInline(results);
+    const result = buildJudgeUserPromptInline(results, 'mock diff');
     expect(result).toContain('empty JSON array');
     expect(result).toContain('[]');
   });

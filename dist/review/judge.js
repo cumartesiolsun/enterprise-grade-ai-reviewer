@@ -94,7 +94,7 @@ function parseInlineFindings(content) {
 /**
  * Run the judge to merge scanner outputs
  */
-export async function runJudge(config, scannerResults) {
+export async function runJudge(config, scannerResults, diff) {
     const start = performance.now();
     const successfulScanners = scannerResults.filter((r) => r.success);
     logger.info('Starting judge aggregation', {
@@ -119,8 +119,8 @@ export async function runJudge(config, scannerResults) {
             ? buildJudgeSystemPromptInline(config.language)
             : buildJudgeSystemPrompt(config.language);
         const userPrompt = config.reviewMode === 'inline'
-            ? buildJudgeUserPromptInline(scannerResults)
-            : buildJudgeUserPrompt(scannerResults);
+            ? buildJudgeUserPromptInline(scannerResults, diff)
+            : buildJudgeUserPrompt(scannerResults, diff);
         const messages = [
             { role: 'system', content: systemPrompt },
             { role: 'user', content: userPrompt },

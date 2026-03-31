@@ -149,7 +149,8 @@ function parseInlineFindings(content: string): InlineFinding[] | undefined {
  */
 export async function runJudge(
   config: JudgeConfig,
-  scannerResults: ScannerResult[]
+  scannerResults: ScannerResult[],
+  diff: string
 ): Promise<JudgeResult> {
   const start = performance.now();
 
@@ -180,8 +181,8 @@ export async function runJudge(
       : buildJudgeSystemPrompt(config.language);
 
     const userPrompt = config.reviewMode === 'inline'
-      ? buildJudgeUserPromptInline(scannerResults)
-      : buildJudgeUserPrompt(scannerResults);
+      ? buildJudgeUserPromptInline(scannerResults, diff)
+      : buildJudgeUserPrompt(scannerResults, diff);
 
     const messages: ChatMessage[] = [
       { role: 'system', content: systemPrompt },

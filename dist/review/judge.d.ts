@@ -31,5 +31,5 @@ export interface JudgeResult {
 /**
  * Run the judge to merge scanner outputs
  */
-export declare function runJudge(config: JudgeConfig, scannerResults: ScannerResult[]): Promise<JudgeResult>;
+export declare function runJudge(config: JudgeConfig, scannerResults: ScannerResult[], diff: string): Promise<JudgeResult>;
 //# sourceMappingURL=judge.d.ts.map
