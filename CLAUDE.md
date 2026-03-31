@@ -68,7 +68,7 @@ git push origin v0.X.Y              # 3. Push fixed tag (no force — prevents a
 git push origin latest -f           # 4. Force-push latest (must force since it moves each release)
 ```
 
-- **Fixed tags** (`v0.1.0`, `v0.2.0`, …) are never moved — they stay for rollback and changelog purposes.
+- **Fixed tags** (`v0.1.0`, `v0.2.0`, `v0.3.0`, …) are never moved — they stay for rollback and changelog purposes.
 - **`latest` tag** is force-updated to the latest fixed tag's commit on every release.
 - Run `npm run build` and commit `dist/` **before** tagging.
 

@@ -205,7 +205,7 @@ API calls follow this retry policy:
 - **Backoff**: Exponential (1s, 2s, 4s)
 - **Max Retries**: 3
 
-## Limitations (v0.2)
+## Limitations (v0.3)
 
 - `auto-select-models` is not implemented (placeholder for future versions)
 - No caching of results across runs
