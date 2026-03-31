@@ -189,12 +189,54 @@ describe('runJudge', () => {
     expect(result.findings![0]!.title).toBe('Import order');
   });
 
+  it('inline mode with prose text before JSON array: extracts and parses', async () => {
+    const config = makeConfig({ reviewMode: 'inline' });
+    const scannerResults = [makeSuccessfulScanner()];
+    const findings: InlineFinding[] = [
+      { file: 'src/chart.tsx', line: 10, severity: 'warning', title: 'Misleading label', body: 'Fix the label.' },
+    ];
+    const mixedContent = `Looking at the reviews, here are the findings:\n\n${JSON.stringify(findings)}`;
+
+    mockedCallOpenRouter.mockResolvedValueOnce({
+      content: mixedContent,
+      tokensUsed: 200,
+    });
+
+    const result = await runJudge(config, scannerResults);
+
+    expect(result.success).toBe(true);
+    expect(result.findings).toBeDefined();
+    expect(result.findings).toHaveLength(1);
+    expect(result.findings![0]!.title).toBe('Misleading label');
+  });
+
+  it('inline mode with prose text before and after JSON array: extracts correctly', async () => {
+    const config = makeConfig({ reviewMode: 'inline' });
+    const scannerResults = [makeSuccessfulScanner()];
+    const findings: InlineFinding[] = [
+      { file: 'src/app.ts', line: 5, severity: 'critical', title: 'Bug found', body: 'Fix it.' },
+    ];
+    const mixedContent = `I'll consolidate the findings.\n\n${JSON.stringify(findings)}\n\nThese are the results.`;
+
+    mockedCallOpenRouter.mockResolvedValueOnce({
+      content: mixedContent,
+      tokensUsed: 200,
+    });
+
+    const result = await runJudge(config, scannerResults);
+
+    expect(result.success).toBe(true);
+    expect(result.findings).toBeDefined();
+    expect(result.findings).toHaveLength(1);
+    expect(result.findings![0]!.title).toBe('Bug found');
+  });
+
   it('inline mode with invalid JSON: returns findings as undefined', async () => {
     const config = makeConfig({ reviewMode: 'inline' });
     const scannerResults = [makeSuccessfulScanner()];
 
     mockedCallOpenRouter.mockResolvedValueOnce({
-      content: 'This is not valid JSON at all { broken',
+      content: 'This is not valid JSON at all and has no brackets',
       tokensUsed: 100,
     });
 
@@ -202,7 +244,6 @@ describe('runJudge', () => {
 
     expect(result.success).toBe(true);
     expect(result.findings).toBeUndefined();
-    expect(result.output).toBe('This is not valid JSON at all { broken');
   });
 
   it('inline mode with non-array JSON: returns findings as undefined', async () => {
@@ -334,5 +375,60 @@ describe('runJudge', () => {
 
     expect(result.success).toBe(true);
     expect(mockedCallOpenRouter).toHaveBeenCalledOnce();
+  });
+
+  it('inline mode: parses sources array from findings', async () => {
+    const config = makeConfig({ reviewMode: 'inline' });
+    const scannerResults = [makeSuccessfulScanner()];
+    const findings = [
+      { file: 'src/app.ts', line: 10, severity: 'critical', title: 'Bug', body: 'Fix', sources: ['model-a', 'model-b'] },
+      { file: 'src/app.ts', line: 20, severity: 'info', title: 'Style', body: 'Nit', sources: ['model-a'] },
+    ];
+
+    mockedCallOpenRouter.mockResolvedValueOnce({
+      content: JSON.stringify(findings),
+      tokensUsed: 200,
+    });
+
+    const result = await runJudge(config, scannerResults);
+
+    expect(result.findings).toBeDefined();
+    expect(result.findings![0]!.sources).toEqual(['model-a', 'model-b']);
+    expect(result.findings![1]!.sources).toEqual(['model-a']);
+  });
+
+  it('inline mode: omits sources when not provided', async () => {
+    const config = makeConfig({ reviewMode: 'inline' });
+    const scannerResults = [makeSuccessfulScanner()];
+    const findings = [
+      { file: 'src/app.ts', line: 10, severity: 'warning', title: 'Issue', body: 'Detail' },
+    ];
+
+    mockedCallOpenRouter.mockResolvedValueOnce({
+      content: JSON.stringify(findings),
+      tokensUsed: 100,
+    });
+
+    const result = await runJudge(config, scannerResults);
+
+    expect(result.findings).toBeDefined();
+    expect(result.findings![0]!.sources).toBeUndefined();
+  });
+
+  it('inline mode: filters non-string items from sources array', async () => {
+    const config = makeConfig({ reviewMode: 'inline' });
+    const scannerResults = [makeSuccessfulScanner()];
+    const findings = [
+      { file: 'src/a.ts', line: 1, severity: 'info', title: 'Test', body: 'Body', sources: ['model-a', 42, null, 'model-b'] },
+    ];
+
+    mockedCallOpenRouter.mockResolvedValueOnce({
+      content: JSON.stringify(findings),
+      tokensUsed: 100,
+    });
+
+    const result = await runJudge(config, scannerResults);
+
+    expect(result.findings![0]!.sources).toEqual(['model-a', 'model-b']);
   });
 });

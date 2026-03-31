@@ -9,14 +9,63 @@ import { logger } from '../utils/logger.js';
  * Attempt to parse the judge's JSON output into InlineFinding[].
  * Returns undefined if parsing fails (caller falls back to summary).
  */
+function extractJsonArray(content) {
+    const trimmed = content.trim();
+    // 1. Try as-is (pure JSON)
+    if (trimmed.startsWith('[')) {
+        return trimmed;
+    }
+    // 2. Strip markdown code fences
+    const fenceRegex = /```(?:json)?\s*\n?([\s\S]*?)\n?\s*```/;
+    const fenceMatch = fenceRegex.exec(trimmed);
+    if (fenceMatch?.[1]?.trim().startsWith('[')) {
+        return fenceMatch[1].trim();
+    }
+    // 3. Extract JSON array from mixed prose + JSON content
+    const firstBracket = trimmed.indexOf('[');
+    const lastBracket = trimmed.lastIndexOf(']');
+    if (firstBracket !== -1 && lastBracket > firstBracket) {
+        return trimmed.slice(firstBracket, lastBracket + 1);
+    }
+    return undefined;
+}
+function parseSources(rec) {
+    if (!Array.isArray(rec['sources']))
+        return undefined;
+    const filtered = rec['sources'].filter((s) => typeof s === 'string');
+    return filtered.length > 0 ? filtered : undefined;
+}
+function validateFindingItem(item) {
+    if (typeof item !== 'object' || item === null)
+        return undefined;
+    const required = ['file', 'line', 'severity', 'title', 'body'];
+    if (!required.every((key) => key in item))
+        return undefined;
+    const rec = item;
+    const severity = rec['severity'];
+    if (typeof rec['file'] !== 'string' ||
+        typeof rec['line'] !== 'number' ||
+        typeof rec['title'] !== 'string' ||
+        typeof rec['body'] !== 'string' ||
+        (severity !== 'critical' && severity !== 'warning' && severity !== 'info')) {
+        return undefined;
+    }
+    const sources = parseSources(rec);
+    return {
+        file: rec['file'],
+        line: rec['line'],
+        severity,
+        title: rec['title'],
+        body: rec['body'],
+        ...(sources ? { sources } : {}),
+    };
+}
 function parseInlineFindings(content) {
     try {
-        let jsonStr = content.trim();
-        // Strip markdown code fences if present
-        const fenceRegex = /^```(?:json)?\s*\n?([\s\S]*?)\n?\s*```$/;
-        const fenceMatch = fenceRegex.exec(jsonStr);
-        if (fenceMatch?.[1]) {
-            jsonStr = fenceMatch[1];
+        const jsonStr = extractJsonArray(content);
+        if (!jsonStr) {
+            logger.warn('Could not extract JSON array from judge inline output');
+            return undefined;
         }
         const parsed = JSON.parse(jsonStr);
         if (!Array.isArray(parsed)) {
@@ -25,34 +74,12 @@ function parseInlineFindings(content) {
         }
         const findings = [];
         for (const item of parsed) {
-            if (typeof item === 'object' &&
-                item !== null &&
-                'file' in item &&
-                'line' in item &&
-                'severity' in item &&
-                'title' in item &&
-                'body' in item) {
-                const rec = item;
-                const severity = rec['severity'];
-                if (typeof rec['file'] === 'string' &&
-                    typeof rec['line'] === 'number' &&
-                    typeof rec['title'] === 'string' &&
-                    typeof rec['body'] === 'string' &&
-                    (severity === 'critical' || severity === 'warning' || severity === 'info')) {
-                    findings.push({
-                        file: rec['file'],
-                        line: rec['line'],
-                        severity,
-                        title: rec['title'],
-                        body: rec['body'],
-                    });
-                }
-                else {
-                    logger.warn('Skipping finding with invalid fields', { item });
-                }
+            const finding = validateFindingItem(item);
+            if (finding) {
+                findings.push(finding);
             }
             else {
-                logger.warn('Skipping malformed finding item');
+                logger.warn('Skipping invalid finding item', { item });
             }
         }
         return findings;

@@ -5,11 +5,12 @@
 
 import { normalizeDiff, getConfigFromEnv } from './github/diff.js';
 import type { GitHubConfig } from './github/diff.js';
-import { postOrUpdateComment, postInlineReview } from './github/comments.js';
+import { postOrUpdateComment } from './github/comments.js';
 import { runScanners } from './review/scanner.js';
 import type { ScannerConfig } from './review/scanner.js';
 import { runJudge } from './review/judge.js';
 import type { JudgeConfig, ReviewMode } from './review/judge.js';
+import { postResults } from './review/postResults.js';
 import type { OpenRouterConfig } from './openrouter/client.js';
 import { logger } from './utils/logger.js';
 
@@ -262,31 +263,7 @@ async function run(): Promise<void> {
     });
 
     // Step 4: Post results to GitHub
-    if (inputs.reviewMode === 'inline' && judgeResult.findings && judgeResult.findings.length > 0) {
-      await postInlineReview(
-        githubConfig,
-        judgeResult.findings,
-        diff.files,
-        diff.headSha,
-        scannerResults,
-        diff.truncation,
-        inputs.commentMarker
-      );
-    } else {
-      // Summary mode, or inline mode with no parsed findings (fallback)
-      if (inputs.reviewMode === 'inline') {
-        logger.warn('Inline mode: no findings parsed, falling back to summary');
-      }
-      await postOrUpdateComment(
-        githubConfig,
-        {
-          judgeOutput: judgeResult.output,
-          scannerResults: scannerResults,
-          truncation: diff.truncation,
-        },
-        inputs.commentMarker
-      );
-    }
+    await postResults(inputs, githubConfig, judgeResult, diff, scannerResults);
 
     const totalDuration = Math.round(performance.now() - startTime);
     const totalTokens = scannerResults.reduce((sum, r) => sum + r.tokensUsed, 0) + judgeResult.tokensUsed;

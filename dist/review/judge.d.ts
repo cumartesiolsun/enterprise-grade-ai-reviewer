@@ -11,6 +11,7 @@ export interface InlineFinding {
     severity: 'critical' | 'warning' | 'info';
     title: string;
     body: string;
+    sources?: string[] | undefined;
 }
 export interface JudgeConfig {
     openrouter: OpenRouterConfig;

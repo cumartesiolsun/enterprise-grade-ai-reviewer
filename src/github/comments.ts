@@ -218,8 +218,13 @@ function getSeverityEmoji(severity: InlineFinding['severity']): string {
 /**
  * Format an inline finding as a review comment body.
  */
+function formatSourcesTag(sources: string[] | undefined): string {
+  if (!sources || sources.length === 0) return '';
+  return `\n\n_by: ${sources.join(', ')}_`;
+}
+
 function formatInlineComment(finding: InlineFinding): string {
-  return `${getSeverityEmoji(finding.severity)} **${finding.title}**\n\n${finding.body}`;
+  return `${getSeverityEmoji(finding.severity)} **${finding.title}**\n\n${finding.body}${formatSourcesTag(finding.sources)}`;
 }
 
 /**
@@ -227,32 +232,50 @@ function formatInlineComment(finding: InlineFinding): string {
  */
 function formatFindingListItem(finding: InlineFinding): string {
   const emoji = getSeverityEmoji(finding.severity);
-  return `- ${emoji} **${finding.title}** (\`${finding.file}:${finding.line}\`)\n  ${finding.body}`;
+  const sourcesTag = finding.sources?.length ? ` (by: ${finding.sources.join(', ')})` : '';
+  return `- ${emoji} **${finding.title}** (\`${finding.file}:${finding.line}\`)${sourcesTag}\n  ${finding.body}`;
 }
 
 /**
  * Build the review body (summary section) for an inline review.
  */
+function countContributions(findings: InlineFinding[]): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const f of findings) {
+    if (f.sources) {
+      for (const model of f.sources) {
+        counts.set(model, (counts.get(model) ?? 0) + 1);
+      }
+    }
+  }
+  return counts;
+}
+
 function buildInlineReviewBody(
   findings: InlineFinding[],
   unmatched: InlineFinding[],
   scannerResults: ScannerResult[],
   truncation: TruncationInfo
 ): string {
+  const allFindings = [...findings, ...unmatched];
+  const contributions = countContributions(allFindings);
+
   const bodyLines: string[] = [
     '## Enterprise AI Review',
     '',
-    `Found **${findings.length}** finding(s): ` +
-      `${findings.filter((f) => f.severity === 'critical').length} critical, ` +
-      `${findings.filter((f) => f.severity === 'warning').length} warning, ` +
-      `${findings.filter((f) => f.severity === 'info').length} info`,
+    `Found **${allFindings.length}** finding(s): ` +
+      `${allFindings.filter((f) => f.severity === 'critical').length} critical, ` +
+      `${allFindings.filter((f) => f.severity === 'warning').length} warning, ` +
+      `${allFindings.filter((f) => f.severity === 'info').length} info`,
     '',
     '### Sources',
     '',
   ];
 
   for (const result of scannerResults) {
-    bodyLines.push(`- \`${result.model}\`: ${getStatusBadge(result)}`);
+    const count = contributions.get(result.model);
+    const contrib = count ? ` — contributed to ${count} finding(s)` : '';
+    bodyLines.push(`- \`${result.model}\`: ${getStatusBadge(result)}${contrib}`);
   }
   bodyLines.push('');
 

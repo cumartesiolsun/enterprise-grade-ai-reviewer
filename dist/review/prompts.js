@@ -85,7 +85,8 @@ Provide a merged code review that:
 1. Removes duplicate findings
 2. Resolves contradictions
 3. Discards weak or incorrect findings
-4. Prioritizes critical issues`;
+4. Prioritizes critical issues
+5. After each finding, note which model(s) reported it in parentheses, e.g. (by: model-a, model-b)`;
 }
 // --- Inline review mode prompts ---
 /**
@@ -114,7 +115,8 @@ Each element must have this exact shape:
   "line": 42,
   "severity": "critical" | "warning" | "info",
   "title": "Short title",
-  "body": "Detailed explanation with fix suggestion"
+  "body": "Detailed explanation with fix suggestion",
+  "sources": ["model-name-1", "model-name-2"]
 }
 
 - "file" must be the exact file path from the diff headers
@@ -122,6 +124,7 @@ Each element must have this exact shape:
 - "severity": "critical" for bugs/security, "warning" for logic/performance, "info" for style/minor
 - "title": under 80 characters
 - "body": problem explanation and suggested fix
+- "sources": array of model names (from the "Review from <model>" headers) that reported this finding
 
 If there are no findings worth reporting, return an empty array: []
 
