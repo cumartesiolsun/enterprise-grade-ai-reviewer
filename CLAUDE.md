@@ -64,7 +64,8 @@ This project uses a floating `latest` tag so consumers can pin to `@latest`. On 
 ```bash
 git tag v0.X.Y                      # 1. Create fixed version tag
 git tag -f latest v0.X.Y            # 2. Move latest to the new version
-git push origin v0.X.Y latest -f    # 3. Push both tags
+git push origin v0.X.Y              # 3. Push fixed tag (no force — prevents accidental overwrite)
+git push origin latest -f           # 4. Force-push latest (must force since it moves each release)
 ```
 
 - **Fixed tags** (`v0.1.0`, `v0.2.0`, …) are never moved — they stay for rollback and changelog purposes.
