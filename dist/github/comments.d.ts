@@ -9,9 +9,6 @@ export interface ReviewCommentData {
     scannerResults: ScannerResult[];
     truncation: TruncationInfo;
 }
-/**
- * Build the comment body with marker
- */
 export declare function buildCommentBody(data: ReviewCommentData, commentMarker: string): string;
 /**
  * Post or update PR comment using marker-based detection

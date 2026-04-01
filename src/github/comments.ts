@@ -41,10 +41,31 @@ function getStatusBadge(result: ScannerResult): string {
 /**
  * Build the comment body with marker
  */
+/**
+ * Parse "(by: model-a, model-b)" tags from free-form judge output
+ * and count how many findings each model contributed to.
+ */
+function countContributionsFromText(text: string): Map<string, number> {
+  const counts = new Map<string, number>();
+  const byTagRegex = /\(by:\s*([^)]+)\)/g;
+
+  let match: RegExpExecArray | null;
+  while ((match = byTagRegex.exec(text)) !== null) {
+    const models = match[1]!.split(',').map((m) => m.trim()).filter((m) => m.length > 0);
+    for (const model of models) {
+      counts.set(model, (counts.get(model) ?? 0) + 1);
+    }
+  }
+
+  return counts;
+}
+
 export function buildCommentBody(
   data: ReviewCommentData,
   commentMarker: string
 ): string {
+  const contributions = countContributionsFromText(data.judgeOutput);
+
   const sections: string[] = [
     '## Enterprise AI Review',
     '',
@@ -58,9 +79,11 @@ export function buildCommentBody(
     '',
   ];
 
-  // Add scanner results with status badges
+  // Add scanner results with status badges and contribution counts
   for (const result of data.scannerResults) {
-    sections.push(`- \`${result.model}\`: ${getStatusBadge(result)}`);
+    const count = contributions.get(result.model);
+    const contrib = count ? ` — contributed to ${count} finding(s)` : '';
+    sections.push(`- \`${result.model}\`: ${getStatusBadge(result)}${contrib}`);
   }
   sections.push('');
 

@@ -177,4 +177,39 @@ describe('buildCommentBody', () => {
     expect(body).toContain('- Original size: 150000 chars');
     expect(body).toContain('- Reviewed size: 80000 chars');
   });
+
+  it('shows contribution counts parsed from (by: ...) tags in judge output', () => {
+    const judgeOutput = [
+      '1. Bug found (by: model-a, model-b)',
+      '2. Security issue (by: model-a, model-c)',
+      '3. Style issue (by: model-b)',
+    ].join('\n');
+
+    const data = makeReviewCommentData({
+      judgeOutput,
+      scannerResults: [
+        makeScannerResult({ model: 'model-a' }),
+        makeScannerResult({ model: 'model-b' }),
+        makeScannerResult({ model: 'model-c' }),
+      ],
+    });
+
+    const body = buildCommentBody(data, DEFAULT_MARKER);
+
+    expect(body).toContain('`model-a`: ✅ OK — contributed to 2 finding(s)');
+    expect(body).toContain('`model-b`: ✅ OK — contributed to 2 finding(s)');
+    expect(body).toContain('`model-c`: ✅ OK — contributed to 1 finding(s)');
+  });
+
+  it('shows no contribution count when judge output has no (by: ...) tags', () => {
+    const data = makeReviewCommentData({
+      judgeOutput: 'No issues found.',
+      scannerResults: [makeScannerResult({ model: 'model-x' })],
+    });
+
+    const body = buildCommentBody(data, DEFAULT_MARKER);
+
+    expect(body).toContain('`model-x`: ✅ OK');
+    expect(body).not.toContain('contributed to');
+  });
 });

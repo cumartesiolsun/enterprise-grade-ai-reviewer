@@ -218,7 +218,24 @@ function getStatusBadge(result) {
 /**
  * Build the comment body with marker
  */
+/**
+ * Parse "(by: model-a, model-b)" tags from free-form judge output
+ * and count how many findings each model contributed to.
+ */
+function countContributionsFromText(text) {
+    const counts = new Map();
+    const byTagRegex = /\(by:\s*([^)]+)\)/g;
+    let match;
+    while ((match = byTagRegex.exec(text)) !== null) {
+        const models = match[1].split(',').map((m) => m.trim()).filter((m) => m.length > 0);
+        for (const model of models) {
+            counts.set(model, (counts.get(model) ?? 0) + 1);
+        }
+    }
+    return counts;
+}
 function buildCommentBody(data, commentMarker) {
+    const contributions = countContributionsFromText(data.judgeOutput);
     const sections = [
         '## Enterprise AI Review',
         '',
@@ -231,9 +248,11 @@ function buildCommentBody(data, commentMarker) {
         '### Sources',
         '',
     ];
-    // Add scanner results with status badges
+    // Add scanner results with status badges and contribution counts
     for (const result of data.scannerResults) {
-        sections.push(`- \`${result.model}\`: ${getStatusBadge(result)}`);
+        const count = contributions.get(result.model);
+        const contrib = count ? ` — contributed to ${count} finding(s)` : '';
+        sections.push(`- \`${result.model}\`: ${getStatusBadge(result)}${contrib}`);
     }
     sections.push('');
     // Notes section (if truncation occurred)
