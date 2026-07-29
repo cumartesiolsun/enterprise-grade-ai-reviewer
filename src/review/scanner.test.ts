@@ -35,6 +35,7 @@ describe('runScanners', () => {
     mockedCallOpenRouter.mockResolvedValueOnce({
       content: 'Found a potential null pointer dereference on line 42.',
       tokensUsed: 150,
+      finishReason: 'stop',
     });
 
     const results = await runScanners(mockConfig, 'diff content');
@@ -45,10 +46,11 @@ describe('runScanners', () => {
     expect(results[0]!.output).toBe('Found a potential null pointer dereference on line 42.');
   });
 
-  it('returns SKIPPED status when content contains "LGTM"', async () => {
+  it('returns SKIPPED status for a short reply containing "LGTM"', async () => {
     mockedCallOpenRouter.mockResolvedValueOnce({
       content: 'LGTM, no issues found.',
       tokensUsed: 20,
+      finishReason: 'stop',
     });
 
     const results = await runScanners(mockConfig, 'diff content');
@@ -58,10 +60,11 @@ describe('runScanners', () => {
     expect(results[0]!.success).toBe(true);
   });
 
-  it('returns SKIPPED status when content contains "looks good"', async () => {
+  it('returns SKIPPED status for a short reply containing "looks good"', async () => {
     mockedCallOpenRouter.mockResolvedValueOnce({
       content: 'This looks good to me, nothing to report.',
       tokensUsed: 25,
+      finishReason: 'stop',
     });
 
     const results = await runScanners(mockConfig, 'diff content');
@@ -75,6 +78,7 @@ describe('runScanners', () => {
     mockedCallOpenRouter.mockResolvedValueOnce({
       content: '   ',
       tokensUsed: 0,
+      finishReason: 'stop',
     });
 
     const results = await runScanners(mockConfig, 'diff content');
@@ -82,6 +86,52 @@ describe('runScanners', () => {
     expect(results).toHaveLength(1);
     expect(results[0]!.status).toBe('SKIPPED');
     expect(results[0]!.success).toBe(true);
+  });
+
+  it('returns SKIPPED status for exactly "LGTM!"', async () => {
+    mockedCallOpenRouter.mockResolvedValueOnce({
+      content: 'LGTM!',
+      tokensUsed: 5,
+      finishReason: 'stop',
+    });
+
+    const results = await runScanners(mockConfig, 'diff content');
+
+    expect(results).toHaveLength(1);
+    expect(results[0]!.status).toBe('SKIPPED');
+    expect(results[0]!.success).toBe(true);
+  });
+
+  it('returns OK status for a long review that mentions "looks good" mid-review', async () => {
+    const longReview =
+      'The auth flow looks good overall, but there is a critical SQL injection ' +
+      'vulnerability on line 40: user input is concatenated directly into the ' +
+      'query string. Use parameterized queries instead. Also consider adding ' +
+      'rate limiting to the login endpoint.';
+    mockedCallOpenRouter.mockResolvedValueOnce({
+      content: longReview,
+      tokensUsed: 120,
+      finishReason: 'stop',
+    });
+
+    const results = await runScanners(mockConfig, 'diff content');
+
+    expect(results).toHaveLength(1);
+    expect(results[0]!.status).toBe('OK');
+    expect(results[0]!.output).toBe(longReview);
+  });
+
+  it('returns OK status for a short finding that does not match the LGTM pattern', async () => {
+    mockedCallOpenRouter.mockResolvedValueOnce({
+      content: 'Possible XSS on line 12.',
+      tokensUsed: 10,
+      finishReason: 'stop',
+    });
+
+    const results = await runScanners(mockConfig, 'diff content');
+
+    expect(results).toHaveLength(1);
+    expect(results[0]!.status).toBe('OK');
   });
 
   it('returns FAILED status when callOpenRouter throws', async () => {
@@ -104,9 +154,9 @@ describe('runScanners', () => {
     };
 
     mockedCallOpenRouter
-      .mockResolvedValueOnce({ content: 'Finding from model-a', tokensUsed: 100 })
-      .mockResolvedValueOnce({ content: 'Finding from model-b', tokensUsed: 200 })
-      .mockResolvedValueOnce({ content: 'Finding from model-c', tokensUsed: 300 });
+      .mockResolvedValueOnce({ content: 'Finding from model-a', tokensUsed: 100, finishReason: 'stop' })
+      .mockResolvedValueOnce({ content: 'Finding from model-b', tokensUsed: 200, finishReason: 'stop' })
+      .mockResolvedValueOnce({ content: 'Finding from model-c', tokensUsed: 300, finishReason: 'stop' });
 
     const results = await runScanners(multiModelConfig, 'diff content');
 
@@ -121,6 +171,7 @@ describe('runScanners', () => {
     mockedCallOpenRouter.mockResolvedValueOnce({
       content: 'Security issue: SQL injection risk.',
       tokensUsed: 175,
+      finishReason: 'stop',
     });
 
     const results = await runScanners(mockConfig, 'diff content');
@@ -140,9 +191,9 @@ describe('runScanners', () => {
     };
 
     mockedCallOpenRouter
-      .mockResolvedValueOnce({ content: 'Finding from model-a', tokensUsed: 100 })
+      .mockResolvedValueOnce({ content: 'Finding from model-a', tokensUsed: 100, finishReason: 'stop' })
       .mockRejectedValueOnce(new Error('model-b crashed'))
-      .mockResolvedValueOnce({ content: 'Finding from model-c', tokensUsed: 300 });
+      .mockResolvedValueOnce({ content: 'Finding from model-c', tokensUsed: 300, finishReason: 'stop' });
 
     const results = await runScanners(multiModelConfig, 'diff content');
 

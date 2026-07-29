@@ -1,8 +1,47 @@
-import { describe, it, expect } from 'vitest';
-import { buildCommentBody } from './comments.js';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { Octokit } from '@octokit/rest';
+import {
+  buildCommentBody,
+  sanitizeModelOutput,
+  findExistingComment,
+  postInlineReview,
+} from './comments.js';
 import type { ReviewCommentData } from './comments.js';
 import type { ScannerResult } from '../review/scanner.js';
-import type { TruncationInfo } from './diff.js';
+import type { InlineFinding } from '../review/judge.js';
+import type { TruncationInfo, FileDiff, GitHubConfig } from './diff.js';
+
+// --- Octokit mock ---
+
+const { mockOctokit } = vi.hoisted(() => {
+  const mockOctokit = {
+    paginate: vi.fn(),
+    issues: {
+      listComments: vi.fn(),
+      updateComment: vi.fn(),
+      createComment: vi.fn(),
+    },
+    pulls: {
+      createReview: vi.fn(),
+      listReviewComments: vi.fn(),
+    },
+  };
+  return { mockOctokit };
+});
+
+vi.mock('@octokit/rest', () => ({
+  // Regular function (not arrow) so `new Octokit()` works; returning an
+  // object from a constructor makes that object the instance.
+  Octokit: vi.fn(function (this: unknown) {
+    return mockOctokit;
+  }),
+}));
+
+// Production code obtains its client via the shared factory (client.ts,
+// which composes retry/throttling plugins) — route it to the same mock.
+vi.mock('./client.js', () => ({
+  createGitHubClient: vi.fn(() => mockOctokit),
+}));
 
 // --- Helper factories ---
 
@@ -44,7 +83,42 @@ function makeReviewCommentData(
   };
 }
 
+function makeGitHubConfig(): GitHubConfig {
+  return { token: 'test-token', owner: 'test-owner', repo: 'test-repo', prNumber: 1 };
+}
+
+function makeFileDiff(overrides: Partial<FileDiff> = {}): FileDiff {
+  return {
+    filename: 'src/app.ts',
+    status: 'modified',
+    additions: 5,
+    deletions: 0,
+    // New-side lines 1-10 are valid inline targets
+    patch: '@@ -1,5 +1,10 @@\n context',
+    ...overrides,
+  };
+}
+
+function makeFinding(overrides: Partial<InlineFinding> = {}): InlineFinding {
+  return {
+    file: 'src/app.ts',
+    line: 2,
+    severity: 'warning',
+    title: 'Test finding',
+    body: 'Something looks off.',
+    ...overrides,
+  };
+}
+
 const DEFAULT_MARKER = 'enterprise-ai-review-marker';
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  mockOctokit.paginate.mockResolvedValue([]);
+  mockOctokit.pulls.createReview.mockResolvedValue({ data: {} });
+  mockOctokit.issues.createComment.mockResolvedValue({ data: {} });
+  mockOctokit.issues.updateComment.mockResolvedValue({ data: {} });
+});
 
 // --- Tests ---
 
@@ -211,5 +285,364 @@ describe('buildCommentBody', () => {
 
     expect(body).toContain('`model-x`: ✅ OK');
     expect(body).not.toContain('contributed to');
+  });
+
+  it('contains OUR marker exactly once even when judge output smuggles the marker', () => {
+    const judgeOutput = `Injected <!-- ${DEFAULT_MARKER} --> attack text`;
+    const body = buildCommentBody(
+      makeReviewCommentData({ judgeOutput }),
+      DEFAULT_MARKER
+    );
+
+    const occurrences = body.split(`<!-- ${DEFAULT_MARKER} -->`).length - 1;
+    expect(occurrences).toBe(1);
+    expect(body).toContain('attack text');
+  });
+
+  it('neutralizes @-mentions in judge output', () => {
+    const body = buildCommentBody(
+      makeReviewCommentData({ judgeOutput: 'cc @octocat please merge' }),
+      DEFAULT_MARKER
+    );
+
+    expect(body).toContain('`@octocat`');
+    expect(body).not.toContain(' @octocat');
+  });
+});
+
+describe('sanitizeModelOutput', () => {
+  it('strips HTML comments including a smuggled marker', () => {
+    const input = 'Before <!-- ENTERPRISE_AI_REVIEW --> after';
+    expect(sanitizeModelOutput(input, 1000)).toBe('Before  after');
+  });
+
+  it('strips multiple and multiline HTML comments', () => {
+    const input = 'a <!-- one -->b<!--\nmulti\nline\n--> c';
+    expect(sanitizeModelOutput(input, 1000)).toBe('a b c');
+  });
+
+  it('strips unterminated HTML comments to end of text', () => {
+    expect(sanitizeModelOutput('Visible <!-- hidden payload with no close', 1000)).toBe('Visible ');
+  });
+
+  it('wraps @-mentions in backticks', () => {
+    expect(sanitizeModelOutput('thanks @alice and @bob-smith', 1000)).toBe(
+      'thanks `@alice` and `@bob-smith`'
+    );
+  });
+
+  it('wraps a mention at the start of the text', () => {
+    expect(sanitizeModelOutput('@team please look', 1000)).toBe('`@team` please look');
+  });
+
+  it('does not double-wrap already backticked mentions', () => {
+    expect(sanitizeModelOutput('ping `@alice` now', 1000)).toBe('ping `@alice` now');
+  });
+
+  it('does not treat email-like text as a mention', () => {
+    expect(sanitizeModelOutput('contact user@example.com', 1000)).toBe(
+      'contact user@example.com'
+    );
+  });
+
+  it('truncates to maxLength with a trailing ellipsis', () => {
+    const out = sanitizeModelOutput('a'.repeat(50), 10);
+    expect(out).toBe(`${'a'.repeat(10)}…`);
+  });
+
+  it('does not truncate text at or below maxLength', () => {
+    expect(sanitizeModelOutput('short', 10)).toBe('short');
+  });
+
+  it('leaves normal markdown intact', () => {
+    const md = '## Heading\n\n- **bold** item\n- `code` span\n\n```ts\nconst x = 1;\n```';
+    expect(sanitizeModelOutput(md, 1000)).toBe(md);
+  });
+});
+
+describe('findExistingComment', () => {
+  it('searches all pages via octokit.paginate', async () => {
+    const comments = Array.from({ length: 150 }, (_, i) => ({
+      id: i + 1,
+      body: `comment ${i + 1}`,
+      user: { login: 'someone', type: 'User' },
+    }));
+    // Marker comment "beyond page 1"
+    comments.push({
+      id: 999,
+      body: `hello <!-- ${DEFAULT_MARKER} --> world`,
+      user: { login: 'github-actions[bot]', type: 'Bot' },
+    });
+    mockOctokit.paginate.mockResolvedValue(comments);
+
+    const octokit = new Octokit({ auth: 'x' });
+    const id = await findExistingComment(octokit, makeGitHubConfig(), DEFAULT_MARKER);
+
+    expect(id).toBe(999);
+    expect(mockOctokit.paginate).toHaveBeenCalledWith(mockOctokit.issues.listComments, {
+      owner: 'test-owner',
+      repo: 'test-repo',
+      issue_number: 1,
+      per_page: 100,
+    });
+    // Must not fetch a single page directly
+    expect(mockOctokit.issues.listComments).not.toHaveBeenCalled();
+  });
+
+  it('ignores a marker comment posted by a human user', async () => {
+    mockOctokit.paginate.mockResolvedValue([
+      {
+        id: 7,
+        body: `<!-- ${DEFAULT_MARKER} -->`,
+        user: { login: 'attacker', type: 'User' },
+      },
+    ]);
+
+    const octokit = new Octokit({ auth: 'x' });
+    const id = await findExistingComment(octokit, makeGitHubConfig(), DEFAULT_MARKER);
+
+    expect(id).toBeNull();
+  });
+
+  it('finds a bot-authored marker comment (type Bot)', async () => {
+    mockOctokit.paginate.mockResolvedValue([
+      { id: 1, body: 'unrelated', user: { login: 'human', type: 'User' } },
+      {
+        id: 42,
+        body: `## Review\n<!-- ${DEFAULT_MARKER} -->\ntext`,
+        user: { login: 'github-actions[bot]', type: 'Bot' },
+      },
+    ]);
+
+    const octokit = new Octokit({ auth: 'x' });
+    const id = await findExistingComment(octokit, makeGitHubConfig(), DEFAULT_MARKER);
+
+    expect(id).toBe(42);
+  });
+
+  it('finds a marker comment authored by a [bot] login even without Bot type', async () => {
+    mockOctokit.paginate.mockResolvedValue([
+      {
+        id: 43,
+        body: `<!-- ${DEFAULT_MARKER} -->`,
+        user: { login: 'my-app[bot]', type: 'User' },
+      },
+    ]);
+
+    const octokit = new Octokit({ auth: 'x' });
+    const id = await findExistingComment(octokit, makeGitHubConfig(), DEFAULT_MARKER);
+
+    expect(id).toBe(43);
+  });
+
+  it('returns null when comments have no author', async () => {
+    mockOctokit.paginate.mockResolvedValue([
+      { id: 5, body: `<!-- ${DEFAULT_MARKER} -->`, user: null },
+    ]);
+
+    const octokit = new Octokit({ auth: 'x' });
+    const id = await findExistingComment(octokit, makeGitHubConfig(), DEFAULT_MARKER);
+
+    expect(id).toBeNull();
+  });
+});
+
+describe('postInlineReview', () => {
+  it('does not double-count unmatched findings in the review body', async () => {
+    // 5 findings: 3 matched (lines within the hunk), 2 unmatched (file not in diff)
+    const findings = [
+      makeFinding({ line: 1, title: 'A', sources: ['model-a'] }),
+      makeFinding({ line: 2, title: 'B', sources: ['model-a'] }),
+      makeFinding({ line: 3, title: 'C', sources: ['model-a'] }),
+      makeFinding({ file: 'src/missing.ts', line: 99, title: 'D', sources: ['model-a'] }),
+      makeFinding({ file: 'src/missing.ts', line: 100, title: 'E', sources: ['model-a'] }),
+    ];
+
+    await postInlineReview(
+      makeGitHubConfig(),
+      findings,
+      [makeFileDiff()],
+      'sha123',
+      [makeScannerResult({ model: 'model-a' })],
+      makeTruncationInfo(),
+      DEFAULT_MARKER
+    );
+
+    expect(mockOctokit.pulls.createReview).toHaveBeenCalledOnce();
+    const reviewArg = mockOctokit.pulls.createReview.mock.calls[0]![0]!;
+
+    expect(reviewArg.comments).toHaveLength(3);
+    expect(reviewArg.body).toContain('Found **5** finding(s)');
+    expect(reviewArg.body).toContain('`model-a`: ✅ OK — contributed to 5 finding(s)');
+    expect(reviewArg.body).not.toContain('Found **7**');
+    expect(reviewArg.body).not.toContain('contributed to 7 finding(s)');
+  });
+
+  it('falls back to a summary comment when createReview fails', async () => {
+    mockOctokit.pulls.createReview.mockRejectedValue(
+      new Error('Unprocessable Entity: 422')
+    );
+
+    const findings = [
+      makeFinding({ line: 2, title: 'Matched issue' }),
+      makeFinding({ file: 'src/missing.ts', line: 99, title: 'Unmatched issue' }),
+    ];
+
+    await expect(
+      postInlineReview(
+        makeGitHubConfig(),
+        findings,
+        [makeFileDiff()],
+        'sha123',
+        [makeScannerResult()],
+        makeTruncationInfo(),
+        DEFAULT_MARKER
+      )
+    ).resolves.toBeUndefined();
+
+    expect(mockOctokit.pulls.createReview).toHaveBeenCalledOnce();
+    expect(mockOctokit.issues.createComment).toHaveBeenCalledOnce();
+
+    const body = mockOctokit.issues.createComment.mock.calls[0]![0]!.body as string;
+    expect(body).toContain('Matched issue');
+    expect(body).toContain('Unmatched issue');
+    expect(body).toContain(`<!-- ${DEFAULT_MARKER} -->`);
+  });
+
+  it('skips findings already posted inline by a bot on a previous run', async () => {
+    const existingReviewComments = [
+      {
+        user: { login: 'github-actions[bot]', type: 'Bot' },
+        path: 'src/app.ts',
+        line: 2,
+        body: '🟡 **Existing bug**\n\nAlready reported.',
+      },
+    ];
+    mockOctokit.paginate.mockImplementation(async (endpoint: unknown) =>
+      endpoint === mockOctokit.pulls.listReviewComments ? existingReviewComments : []
+    );
+
+    const findings = [
+      makeFinding({ line: 2, title: 'Existing bug' }),
+      makeFinding({ line: 3, title: 'New bug' }),
+    ];
+
+    await postInlineReview(
+      makeGitHubConfig(),
+      findings,
+      [makeFileDiff()],
+      'sha123',
+      [makeScannerResult()],
+      makeTruncationInfo(),
+      DEFAULT_MARKER
+    );
+
+    expect(mockOctokit.pulls.createReview).toHaveBeenCalledOnce();
+    const reviewArg = mockOctokit.pulls.createReview.mock.calls[0]![0]!;
+
+    expect(reviewArg.comments).toHaveLength(1);
+    expect(reviewArg.comments[0].body).toContain('New bug');
+    expect(reviewArg.comments[0].line).toBe(3);
+    expect(reviewArg.body).toContain('Found **1** finding(s)');
+  });
+
+  it('posts nothing when all findings are duplicates and none are unmatched', async () => {
+    const existingReviewComments = [
+      {
+        user: { login: 'github-actions[bot]', type: 'Bot' },
+        path: 'src/app.ts',
+        line: 2,
+        body: '🟡 **Existing bug**\n\nAlready reported.',
+      },
+    ];
+    mockOctokit.paginate.mockImplementation(async (endpoint: unknown) =>
+      endpoint === mockOctokit.pulls.listReviewComments ? existingReviewComments : []
+    );
+
+    await postInlineReview(
+      makeGitHubConfig(),
+      [makeFinding({ line: 2, title: 'Existing bug' })],
+      [makeFileDiff()],
+      'sha123',
+      [makeScannerResult()],
+      makeTruncationInfo(),
+      DEFAULT_MARKER
+    );
+
+    expect(mockOctokit.pulls.createReview).not.toHaveBeenCalled();
+    expect(mockOctokit.issues.createComment).not.toHaveBeenCalled();
+    expect(mockOctokit.issues.updateComment).not.toHaveBeenCalled();
+  });
+
+  it('does not dedupe against human-authored review comments', async () => {
+    const existingReviewComments = [
+      {
+        user: { login: 'attacker', type: 'User' },
+        path: 'src/app.ts',
+        line: 2,
+        body: '🟡 **Existing bug**\n\nPlanted to suppress the review.',
+      },
+    ];
+    mockOctokit.paginate.mockImplementation(async (endpoint: unknown) =>
+      endpoint === mockOctokit.pulls.listReviewComments ? existingReviewComments : []
+    );
+
+    await postInlineReview(
+      makeGitHubConfig(),
+      [makeFinding({ line: 2, title: 'Existing bug' })],
+      [makeFileDiff()],
+      'sha123',
+      [makeScannerResult()],
+      makeTruncationInfo(),
+      DEFAULT_MARKER
+    );
+
+    expect(mockOctokit.pulls.createReview).toHaveBeenCalledOnce();
+    const reviewArg = mockOctokit.pulls.createReview.mock.calls[0]![0]!;
+    expect(reviewArg.comments).toHaveLength(1);
+  });
+
+  it('falls back to summary comment when no findings match the diff', async () => {
+    await postInlineReview(
+      makeGitHubConfig(),
+      [makeFinding({ file: 'src/missing.ts', line: 99, title: 'Off-diff issue' })],
+      [makeFileDiff()],
+      'sha123',
+      [makeScannerResult()],
+      makeTruncationInfo(),
+      DEFAULT_MARKER
+    );
+
+    expect(mockOctokit.pulls.createReview).not.toHaveBeenCalled();
+    expect(mockOctokit.issues.createComment).toHaveBeenCalledOnce();
+    const body = mockOctokit.issues.createComment.mock.calls[0]![0]!.body as string;
+    expect(body).toContain('Off-diff issue');
+  });
+
+  it('sanitizes model-generated titles and bodies in inline comments', async () => {
+    const findings = [
+      makeFinding({
+        line: 2,
+        title: 'Bug <!-- hidden --> here',
+        body: 'Please fix @maintainer <!-- sneaky -->',
+      }),
+    ];
+
+    await postInlineReview(
+      makeGitHubConfig(),
+      findings,
+      [makeFileDiff()],
+      'sha123',
+      [makeScannerResult()],
+      makeTruncationInfo(),
+      DEFAULT_MARKER
+    );
+
+    const reviewArg = mockOctokit.pulls.createReview.mock.calls[0]![0]!;
+    const commentBody = reviewArg.comments[0].body as string;
+    expect(commentBody).not.toContain('<!--');
+    expect(commentBody).not.toContain('hidden');
+    expect(commentBody).not.toContain('sneaky');
+    expect(commentBody).toContain('`@maintainer`');
   });
 });

@@ -3,14 +3,13 @@
   "version": "0.3.0",
   "description": "Enterprise-grade AI code reviewer with multi-LLM parallel scanning and judge aggregation",
   "main": "dist/index.js",
-  "types": "dist/index.d.ts",
   "type": "module",
   "scripts": {
-    "build": "tsc && ncc build dist/index.js -o dist --source-map --license licenses.txt",
+    "build": "ncc build src/index.ts -o dist --source-map --no-source-map-register --license licenses.txt && rm -f dist/package.json",
     "build:tsc": "tsc",
     "dev": "tsx src/index.ts",
     "start": "node dist/index.js",
-    "lint": "eslint src/**/*.ts",
+    "lint": "eslint src",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest"
@@ -25,13 +24,17 @@
   "author": "",
   "license": "MIT",
   "dependencies": {
+    "@octokit/plugin-retry": "^7.2.1",
+    "@octokit/plugin-throttling": "^9.6.1",
     "@octokit/rest": "^21.0.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
-    "@vercel/ncc": "^0.38.3",
+    "@vercel/ncc": "0.38.4",
+    "eslint": "^9.39.5",
     "tsx": "^4.7.0",
     "typescript": "^5.4.0",
+    "typescript-eslint": "^8.65.0",
     "vitest": "^4.1.2"
   },
   "engines": {

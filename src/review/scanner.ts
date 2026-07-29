@@ -59,10 +59,13 @@ async function runSingleScanner(
       outputLength: content.length,
     });
 
-    // Determine status: OK if has content, SKIPPED if empty/LGTM
-    const isEmptyOrLgtm = content.trim().length === 0 ||
-      content.toLowerCase().includes('lgtm') ||
-      content.toLowerCase().includes('looks good');
+    // Determine status: SKIPPED only when the output is empty, or when it is
+    // a short "all clear" reply (e.g. "LGTM!"). A long review that merely
+    // mentions "looks good" somewhere still counts as OK.
+    const trimmed = content.trim();
+    const isEmptyOrLgtm =
+      trimmed.length === 0 ||
+      (trimmed.length < 120 && /\b(lgtm|looks good)\b/i.test(trimmed));
 
     const status: ScannerStatus = isEmptyOrLgtm ? 'SKIPPED' : 'OK';
 

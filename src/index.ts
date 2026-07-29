@@ -1,153 +1,98 @@
 /**
  * Enterprise-Grade AI Reviewer
- * MVP v0.1 - GitHub Action Entry Point
+ * GitHub Action Entry Point (thin orchestrator)
  */
 
+import { parseInputs, getInput } from './config.js';
 import { normalizeDiff, getConfigFromEnv } from './github/diff.js';
-import type { GitHubConfig } from './github/diff.js';
+import type { GitHubConfig, NormalizedDiff, TruncationInfo } from './github/diff.js';
 import { postOrUpdateComment } from './github/comments.js';
 import { runScanners } from './review/scanner.js';
-import type { ScannerConfig } from './review/scanner.js';
+import type { ScannerConfig, ScannerResult } from './review/scanner.js';
 import { runJudge } from './review/judge.js';
-import type { JudgeConfig, ReviewMode } from './review/judge.js';
+import type { JudgeConfig } from './review/judge.js';
 import { postResults } from './review/postResults.js';
 import type { OpenRouterConfig } from './openrouter/client.js';
+import { writeActionOutputs, writeStepSummary } from './utils/actionOutputs.js';
 import { logger } from './utils/logger.js';
 
-/**
- * Action inputs from environment
- */
-interface ActionInputs {
-  openrouterApiKey: string;
-  githubToken: string;
-  baseUrl: string;
-  scannerModels: string[];
-  judgeModel: string;
-  language: string;
-  autoSelectModels: boolean;
-  maxFiles: number;
-  maxChars: number;
-  timeoutMs: number;
-  maxTokensScanner: number;
-  maxTokensJudge: number;
-  commentMarker: string;
-  reviewMode: ReviewMode;
-}
+const EMPTY_TRUNCATION: TruncationInfo = {
+  filesFound: 0,
+  filesReviewed: 0,
+  originalChars: 0,
+  truncatedChars: 0,
+  wasTruncated: false,
+};
 
 /**
- * Get action input with default (kebab-case input names)
- * GitHub Actions preserves hyphens in env var names (INPUT_GITHUB-TOKEN)
- * See: https://github.com/actions/runner/issues/2283
+ * Reduce an internal/upstream error message to a coarse class or status.
+ * Never leaks upstream response bodies into PR comments.
  */
-function getInput(name: string, defaultValue: string): string {
-  // GitHub Actions: github-token -> INPUT_GITHUB-TOKEN (hyphens preserved)
-  const envName = `INPUT_${name.toUpperCase()}`;
-  return process.env[envName] ?? defaultValue;
-}
-
-/**
- * Get required input (throws if missing)
- */
-function getRequiredInput(name: string): string {
-  const value = getInput(name, '');
-  if (!value) {
-    throw new Error(`Required input '${name}' is missing`);
+function describeErrorClass(message: string | undefined): string {
+  if (!message) {
+    return 'unknown error';
   }
-  return value;
+  const statusMatch = /OpenRouter API error (\d+)/.exec(message);
+  if (statusMatch) {
+    return `upstream API error ${statusMatch[1]}`;
+  }
+  if (/abort|timeout/i.test(message)) {
+    return 'request timed out';
+  }
+  if (/empty response/i.test(message)) {
+    return 'empty model response';
+  }
+  return 'unexpected error';
 }
 
-/**
- * Parse scanner-models input (supports JSON array, multiline, or CSV)
- */
-function parseScannerModels(input: string): string[] {
-  const trimmed = input.trim();
+interface RunOutcome {
+  scannerResults: ScannerResult[];
+  totalTokens: number;
+  findingsCount: number;
+  durationMs: number;
+  truncation?: TruncationInfo | undefined;
+}
 
-  if (trimmed.length === 0) {
-    return [];
-  }
+function buildStepSummary(outcome: RunOutcome): string {
+  const lines: string[] = ['## Enterprise AI Review', ''];
 
-  // Try JSON array first
-  if (trimmed.startsWith('[')) {
-    try {
-      const parsed = JSON.parse(trimmed) as unknown;
-      if (Array.isArray(parsed)) {
-        return parsed
-          .map((item) => String(item).trim())
-          .filter((item) => item.length > 0);
-      }
-    } catch {
-      // Not valid JSON, fall through to other methods
+  if (outcome.scannerResults.length > 0) {
+    lines.push('| Scanner model | Status |', '| --- | --- |');
+    for (const result of outcome.scannerResults) {
+      lines.push(`| ${result.model} | ${result.status} |`);
     }
+    lines.push('');
   }
 
-  // Try multiline (contains newlines)
-  if (trimmed.includes('\n')) {
-    return trimmed
-      .split('\n')
-      .map((line) => line.trim())
-      .filter((line) => line.length > 0);
+  lines.push(
+    `- Total tokens: ${outcome.totalTokens}`,
+    `- Duration: ${(outcome.durationMs / 1000).toFixed(1)}s`
+  );
+  if (outcome.truncation?.truncationReason) {
+    lines.push(`- Truncation: ${outcome.truncation.truncationReason}`);
   }
 
-  // Fallback to CSV
-  return trimmed
-    .split(',')
-    .map((item) => item.trim())
-    .filter((item) => item.length > 0);
+  return lines.join('\n');
 }
 
 /**
- * Parse action inputs from environment
+ * Best-effort: write action outputs and the step summary.
+ * Never throws — failures here must not mask the run result.
  */
-function parseInputs(): ActionInputs {
-  const autoSelectModels = getInput('auto-select-models', 'false').toLowerCase() === 'true';
-  const scannerModelsRaw = getInput('scanner-models', '');
-  const scannerModels = parseScannerModels(scannerModelsRaw);
-  const judgeModel = getInput('judge-model', '');
-
-  // Validate auto-select-models first (not implemented in MVP)
-  if (autoSelectModels) {
-    throw new Error(
-      'auto-select-models is not implemented in MVP. Please provide scanner-models explicitly and set auto-select-models to false.'
-    );
+function reportRunOutcome(outcome: RunOutcome): void {
+  try {
+    const scannersFailed = outcome.scannerResults.filter((r) => !r.success).length;
+    writeActionOutputs({
+      'total-tokens': String(outcome.totalTokens),
+      'findings-count': String(outcome.findingsCount),
+      'scanners-failed': String(scannersFailed),
+    });
+    writeStepSummary(buildStepSummary(outcome));
+  } catch (error) {
+    logger.warn('Failed to write action outputs/step summary', {
+      error: error instanceof Error ? error.message : String(error),
+    });
   }
-
-  // Validate scanner-models
-  if (scannerModels.length === 0) {
-    throw new Error(
-      "Required input 'scanner-models' is missing. Provide a list of models (CSV, multiline, or JSON array)."
-    );
-  }
-
-  // Validate judge-model
-  if (!judgeModel) {
-    throw new Error("Required input 'judge-model' is missing.");
-  }
-
-  // Parse and validate review mode
-  const reviewModeRaw = getInput('review-mode', 'summary').toLowerCase();
-  if (reviewModeRaw !== 'summary' && reviewModeRaw !== 'inline') {
-    throw new Error(
-      `Invalid review-mode '${reviewModeRaw}'. Must be 'summary' or 'inline'.`
-    );
-  }
-  const reviewMode: ReviewMode = reviewModeRaw;
-
-  return {
-    openrouterApiKey: getRequiredInput('openrouter-api-key'),
-    githubToken: getRequiredInput('github-token'),
-    baseUrl: getInput('base-url', 'https://openrouter.ai/api/v1'),
-    scannerModels,
-    judgeModel,
-    language: getInput('language', 'tr'),
-    autoSelectModels,
-    maxFiles: Number.parseInt(getInput('max-files', '10'), 10),
-    maxChars: Number.parseInt(getInput('max-chars', '80000'), 10),
-    timeoutMs: Number.parseInt(getInput('timeout-ms', '180000'), 10),
-    maxTokensScanner: Number.parseInt(getInput('max-tokens-scanner', '2000'), 10),
-    maxTokensJudge: Number.parseInt(getInput('max-tokens-judge', '4000'), 10),
-    commentMarker: getInput('comment-marker', 'ENTERPRISE_AI_REVIEW'),
-    reviewMode,
-  };
 }
 
 /**
@@ -156,9 +101,15 @@ function parseInputs(): ActionInputs {
 async function run(): Promise<void> {
   const startTime = performance.now();
 
+  // Tracked outside the try block so the catch path can report what is known
+  let scannerResults: ScannerResult[] = [];
+  let judgeTokens = 0;
+  let findingsCount = 0;
+  let diff: NormalizedDiff | undefined;
+
   try {
     // Parse inputs
-    const inputs = parseInputs();
+    const inputs = parseInputs(process.env);
 
     logger.info('Starting Enterprise AI Review', {
       scannerModels: inputs.scannerModels,
@@ -167,12 +118,11 @@ async function run(): Promise<void> {
       maxFiles: inputs.maxFiles,
       maxChars: inputs.maxChars,
       reviewMode: inputs.reviewMode,
+      excludePaths: inputs.excludePaths,
     });
 
-    // Set up GitHub config from environment
-    // Override token with action input
-    process.env['GITHUB_TOKEN'] = inputs.githubToken;
-    const githubConfig: GitHubConfig = getConfigFromEnv();
+    // Set up GitHub config (token passed explicitly, no process.env mutation)
+    const githubConfig: GitHubConfig = getConfigFromEnv(inputs.githubToken);
 
     logger.info('GitHub config loaded', {
       owner: githubConfig.owner,
@@ -188,7 +138,12 @@ async function run(): Promise<void> {
     };
 
     // Step 1: Fetch and normalize diff
-    const diff = await normalizeDiff(githubConfig, inputs.maxFiles, inputs.maxChars);
+    diff = await normalizeDiff(
+      githubConfig,
+      inputs.maxFiles,
+      inputs.maxChars,
+      inputs.excludePaths
+    );
 
     logger.info('Diff fetched', {
       filesFound: diff.truncation.filesFound,
@@ -208,6 +163,13 @@ async function run(): Promise<void> {
         },
         inputs.commentMarker
       );
+      reportRunOutcome({
+        scannerResults: [],
+        totalTokens: 0,
+        findingsCount: 0,
+        durationMs: Math.round(performance.now() - startTime),
+        truncation: diff.truncation,
+      });
       return;
     }
 
@@ -219,7 +181,7 @@ async function run(): Promise<void> {
       language: inputs.language,
     };
 
-    const scannerResults = await runScanners(scannerConfig, diff.combinedDiff);
+    scannerResults = await runScanners(scannerConfig, diff.combinedDiff);
 
     const successfulScanners = scannerResults.filter((r) => r.success);
     const failedScanners = scannerResults.filter((r) => !r.success);
@@ -234,13 +196,21 @@ async function run(): Promise<void> {
       await postOrUpdateComment(
         githubConfig,
         {
-          judgeOutput: 'Review failed - all scanner models returned errors.',
-          scannerResults: scannerResults,
+          judgeOutput:
+            '⚠️ AI review could not be completed — all scanner models failed. Check the Actions run log for details.',
+          scannerResults,
           truncation: diff.truncation,
         },
         inputs.commentMarker
       );
-      return;
+      reportRunOutcome({
+        scannerResults,
+        totalTokens: scannerResults.reduce((sum, r) => sum + r.tokensUsed, 0),
+        findingsCount: 0,
+        durationMs: Math.round(performance.now() - startTime),
+        truncation: diff.truncation,
+      });
+      process.exit(1);
     }
 
     // Step 3: Run judge to merge results
@@ -253,6 +223,7 @@ async function run(): Promise<void> {
     };
 
     const judgeResult = await runJudge(judgeConfig, scannerResults, diff.combinedDiff);
+    judgeTokens = judgeResult.tokensUsed;
 
     logger.info('Judge completed', {
       success: judgeResult.success,
@@ -262,11 +233,41 @@ async function run(): Promise<void> {
       findingsCount: judgeResult.findings?.length,
     });
 
+    const totalTokens =
+      scannerResults.reduce((sum, r) => sum + r.tokensUsed, 0) + judgeResult.tokensUsed;
+
+    // A failed judge means the review did not happen — fail the action instead
+    // of posting the failure text as if it were the review (and going green).
+    if (!judgeResult.success) {
+      logger.error('Judge aggregation failed', { error: judgeResult.error });
+
+      await postOrUpdateComment(
+        githubConfig,
+        {
+          judgeOutput: `⚠️ AI review could not be completed (judge aggregation failed: ${describeErrorClass(judgeResult.error)}). Check the Actions run log for details.`,
+          scannerResults,
+          truncation: diff.truncation,
+        },
+        inputs.commentMarker
+      );
+
+      reportRunOutcome({
+        scannerResults,
+        totalTokens,
+        findingsCount: 0,
+        durationMs: Math.round(performance.now() - startTime),
+        truncation: diff.truncation,
+      });
+
+      process.exit(1);
+    }
+
+    findingsCount = judgeResult.findings?.length ?? 0;
+
     // Step 4: Post results to GitHub
     await postResults(inputs, githubConfig, judgeResult, diff, scannerResults);
 
     const totalDuration = Math.round(performance.now() - startTime);
-    const totalTokens = scannerResults.reduce((sum, r) => sum + r.tokensUsed, 0) + judgeResult.tokensUsed;
 
     logger.info('Review completed successfully', {
       totalDurationMs: totalDuration,
@@ -274,38 +275,47 @@ async function run(): Promise<void> {
       scannersUsed: successfulScanners.length,
     });
 
+    reportRunOutcome({
+      scannerResults,
+      totalTokens,
+      findingsCount,
+      durationMs: totalDuration,
+      truncation: diff.truncation,
+    });
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
     logger.error('Review failed', { error: errorMessage });
 
-    // Try to post error comment
+    // PR comments only get a generic message plus at most the first line of
+    // the error (truncated) — full details stay in the Actions log.
+    const firstLine = (errorMessage.split('\n')[0] ?? '').slice(0, 200);
+
     try {
-      // Use getInput helper which handles kebab-case -> INPUT_UPPER_SNAKE conversion
-      const fallbackToken = getInput('github-token', '');
-      if (fallbackToken) {
-        process.env['GITHUB_TOKEN'] = fallbackToken;
-      }
-      const githubConfig = getConfigFromEnv();
-      const commentMarker = getInput('comment-marker', 'ENTERPRISE_AI_REVIEW');
+      const fallbackToken = getInput(process.env, 'github-token', '');
+      const githubConfig = getConfigFromEnv(fallbackToken);
+      const commentMarker = getInput(process.env, 'comment-marker', 'ENTERPRISE_AI_REVIEW');
+      const errorSuffix = firstLine ? `\n\nError: ${firstLine}` : '';
 
       await postOrUpdateComment(
         githubConfig,
         {
-          judgeOutput: `Review failed with error: ${errorMessage}`,
+          judgeOutput: `⚠️ AI review failed to complete. Check the Actions run log for details.${errorSuffix}`,
           scannerResults: [],
-          truncation: {
-            filesFound: 0,
-            filesReviewed: 0,
-            originalChars: 0,
-            truncatedChars: 0,
-            wasTruncated: false,
-          },
+          truncation: diff?.truncation ?? EMPTY_TRUNCATION,
         },
         commentMarker
       );
     } catch {
       // Ignore error posting failure
     }
+
+    reportRunOutcome({
+      scannerResults,
+      totalTokens: scannerResults.reduce((sum, r) => sum + r.tokensUsed, 0) + judgeTokens,
+      findingsCount,
+      durationMs: Math.round(performance.now() - startTime),
+      truncation: diff?.truncation,
+    });
 
     process.exit(1);
   }

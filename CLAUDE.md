@@ -9,11 +9,11 @@ Enterprise-Grade AI Reviewer — a GitHub Action that runs multiple LLM models i
 ## Commands
 
 ```bash
-npm run build          # TypeScript compile + ncc bundle (dist/index.js)
-npm run build:tsc      # TypeScript compile only
+npm run build          # ncc bundles src/index.ts directly → dist/ (index.js, index.js.map, licenses.txt only)
+npm run build:tsc      # TypeScript compile only (emits to build/, gitignored)
 npm run dev            # Run with tsx (requires INPUT_* env vars)
 npm run start          # Run bundled dist/index.js
-npm run lint           # ESLint
+npm run lint           # ESLint (flat config: eslint.config.js, typescript-eslint recommended)
 npm run typecheck      # tsc --noEmit
 npm run test           # Vitest (run once)
 npm run test:watch     # Vitest (watch mode)
@@ -47,11 +47,10 @@ PR Trigger → Diff Normalization → Parallel Scanners → Judge Aggregation �
 
 - **Import extensions**: All imports must use `.js` extensions (NodeNext module resolution)
 - **Input env vars preserve hyphens**: `github-token` → `INPUT_GITHUB-TOKEN`, not `INPUT_GITHUB_TOKEN`
-- **Rebuild dist before committing**: `dist/index.js` is bundled with `@vercel/ncc` and committed — stale bundles break the action
+- **Rebuild dist before committing**: `dist/index.js` is bundled with `@vercel/ncc` and committed — stale bundles break the action. CI enforces this with a dist-drift gate (`git diff --exit-code dist/` after a fresh build), so a PR with a stale bundle fails CI.
 - **`auto-select-models` not implemented**: Setting it to `true` throws immediately (MVP limitation)
 - **Strict TS**: `exactOptionalPropertyTypes` and `noUncheckedIndexedAccess` are enabled — use `undefined` checks on indexed access
-- **No ESLint config file**: `npm run lint` runs eslint with defaults only
-- **Single runtime dependency**: `@octokit/rest` only
+- **Minimal runtime dependencies**: official `@octokit` packages only (`@octokit/rest` + `plugin-retry` + `plugin-throttling`, composed in `src/github/client.ts`) — do not add runtime dependencies outside the `@octokit` family
 
 ### Configuration
 

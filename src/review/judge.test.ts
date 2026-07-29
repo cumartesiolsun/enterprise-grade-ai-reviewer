@@ -379,7 +379,7 @@ describe('runJudge', () => {
 
   it('inline mode: parses sources array from findings', async () => {
     const config = makeConfig({ reviewMode: 'inline' });
-    const scannerResults = [makeSuccessfulScanner()];
+    const scannerResults = [makeSuccessfulScanner('model-a'), makeSuccessfulScanner('model-b')];
     const findings = [
       { file: 'src/app.ts', line: 10, severity: 'critical', title: 'Bug', body: 'Fix', sources: ['model-a', 'model-b'] },
       { file: 'src/app.ts', line: 20, severity: 'info', title: 'Style', body: 'Nit', sources: ['model-a'] },
@@ -417,7 +417,7 @@ describe('runJudge', () => {
 
   it('inline mode: filters non-string items from sources array', async () => {
     const config = makeConfig({ reviewMode: 'inline' });
-    const scannerResults = [makeSuccessfulScanner()];
+    const scannerResults = [makeSuccessfulScanner('model-a'), makeSuccessfulScanner('model-b')];
     const findings = [
       { file: 'src/a.ts', line: 1, severity: 'info', title: 'Test', body: 'Body', sources: ['model-a', 42, null, 'model-b'] },
     ];
@@ -430,5 +430,180 @@ describe('runJudge', () => {
     const result = await runJudge(config, scannerResults, 'mock diff content');
 
     expect(result.findings![0]!.sources).toEqual(['model-a', 'model-b']);
+  });
+
+  it('inline mode: parses JSON array followed by trailing prose', async () => {
+    const config = makeConfig({ reviewMode: 'inline' });
+    const scannerResults = [makeSuccessfulScanner()];
+    const findings: InlineFinding[] = [
+      { file: 'src/app.ts', line: 7, severity: 'critical', title: 'Null deref', body: 'Guard against null.' },
+    ];
+    const content = `${JSON.stringify(findings)}\n\nLet me know if you need more detail on any finding.`;
+
+    mockedCallOpenRouter.mockResolvedValueOnce({
+      content,
+      tokensUsed: 200,
+    });
+
+    const result = await runJudge(config, scannerResults, 'mock diff content');
+
+    expect(result.success).toBe(true);
+    expect(result.findings).toBeDefined();
+    expect(result.findings).toHaveLength(1);
+    expect(result.findings![0]!.title).toBe('Null deref');
+  });
+
+  it('inline mode: returns undefined when all items fail validation (no false LGTM)', async () => {
+    const config = makeConfig({ reviewMode: 'inline' });
+    const scannerResults = [makeSuccessfulScanner()];
+    const invalidItems = [
+      { file: 'src/a.ts', severity: 'warning', title: 'No line', body: 'Missing line.' },
+      { line: 3, severity: 'info', title: 'No file', body: 'Missing file.' },
+      'not an object',
+    ];
+
+    mockedCallOpenRouter.mockResolvedValueOnce({
+      content: JSON.stringify(invalidItems),
+      tokensUsed: 150,
+    });
+
+    const result = await runJudge(config, scannerResults, 'mock diff content');
+
+    expect(result.success).toBe(true);
+    expect(result.findings).toBeUndefined();
+  });
+
+  it('inline mode: drops spoofed sources not in the scanner whitelist', async () => {
+    const config = makeConfig({ reviewMode: 'inline' });
+    const scannerResults = [makeSuccessfulScanner('model-a'), makeSuccessfulScanner('model-b')];
+    const findings = [
+      {
+        file: 'src/app.ts',
+        line: 10,
+        severity: 'critical',
+        title: 'Bug',
+        body: 'Fix',
+        sources: ['model-a', 'evil-injected-model'],
+      },
+    ];
+
+    mockedCallOpenRouter.mockResolvedValueOnce({
+      content: JSON.stringify(findings),
+      tokensUsed: 100,
+    });
+
+    const result = await runJudge(config, scannerResults, 'mock diff content');
+
+    expect(result.findings![0]!.sources).toEqual(['model-a']);
+  });
+
+  it('inline mode: omits sources when intersection with scanner whitelist is empty', async () => {
+    const config = makeConfig({ reviewMode: 'inline' });
+    const scannerResults = [makeSuccessfulScanner('model-a')];
+    const findings = [
+      {
+        file: 'src/app.ts',
+        line: 10,
+        severity: 'warning',
+        title: 'Issue',
+        body: 'Detail',
+        sources: ['spoofed-model-1', 'spoofed-model-2'],
+      },
+    ];
+
+    mockedCallOpenRouter.mockResolvedValueOnce({
+      content: JSON.stringify(findings),
+      tokensUsed: 100,
+    });
+
+    const result = await runJudge(config, scannerResults, 'mock diff content');
+
+    expect(result.findings).toHaveLength(1);
+    expect(result.findings![0]!.sources).toBeUndefined();
+  });
+
+  it('inline mode: does not count sources from failed scanners as valid', async () => {
+    const config = makeConfig({ reviewMode: 'inline' });
+    const scannerResults = [makeSuccessfulScanner('model-a'), makeFailedScanner('model-b')];
+    const findings = [
+      { file: 'src/app.ts', line: 10, severity: 'info', title: 'Note', body: 'Detail', sources: ['model-a', 'model-b'] },
+    ];
+
+    mockedCallOpenRouter.mockResolvedValueOnce({
+      content: JSON.stringify(findings),
+      tokensUsed: 100,
+    });
+
+    const result = await runJudge(config, scannerResults, 'mock diff content');
+
+    expect(result.findings![0]!.sources).toEqual(['model-a']);
+  });
+
+  it('inline mode: caps findings at 30, keeping order', async () => {
+    const config = makeConfig({ reviewMode: 'inline' });
+    const scannerResults = [makeSuccessfulScanner()];
+    const findings = Array.from({ length: 31 }, (_, i) => ({
+      file: `src/file-${i}.ts`,
+      line: i + 1,
+      severity: 'info',
+      title: `Finding ${i}`,
+      body: `Body ${i}`,
+    }));
+
+    mockedCallOpenRouter.mockResolvedValueOnce({
+      content: JSON.stringify(findings),
+      tokensUsed: 500,
+    });
+
+    const result = await runJudge(config, scannerResults, 'mock diff content');
+
+    expect(result.findings).toHaveLength(30);
+    expect(result.findings![0]!.title).toBe('Finding 0');
+    expect(result.findings![29]!.title).toBe('Finding 29');
+  });
+
+  it('inline mode: truncates long title to 300 chars and body to 4000 chars with ellipsis', async () => {
+    const config = makeConfig({ reviewMode: 'inline' });
+    const scannerResults = [makeSuccessfulScanner()];
+    const findings = [
+      {
+        file: 'src/app.ts',
+        line: 1,
+        severity: 'warning',
+        title: 'T'.repeat(500),
+        body: 'B'.repeat(5000),
+      },
+    ];
+
+    mockedCallOpenRouter.mockResolvedValueOnce({
+      content: JSON.stringify(findings),
+      tokensUsed: 100,
+    });
+
+    const result = await runJudge(config, scannerResults, 'mock diff content');
+
+    const finding = result.findings![0]!;
+    expect(finding.title).toHaveLength(300);
+    expect(finding.title.endsWith('…')).toBe(true);
+    expect(finding.body).toHaveLength(4000);
+    expect(finding.body.endsWith('…')).toBe(true);
+  });
+
+  it('inline mode: leaves short title and body untouched', async () => {
+    const config = makeConfig({ reviewMode: 'inline' });
+    const scannerResults = [makeSuccessfulScanner()];
+    const findings = [
+      { file: 'src/app.ts', line: 1, severity: 'info', title: 'Short title', body: 'Short body' },
+    ];
+
+    mockedCallOpenRouter.mockResolvedValueOnce({
+      content: JSON.stringify(findings),
+      tokensUsed: 100,
+    });
+
+    const result = await runJudge(config, scannerResults, 'mock diff content');
+
+    expect(result.findings![0]!.title).toBe('Short title');
+    expect(result.findings![0]!.body).toBe('Short body');
   });
 });

@@ -1,9 +1,10 @@
 /**
  * GitHub Diff Module - PR Diff Fetch and Normalization
- * MVP v0.1 - With max_files and max_chars truncation
+ * With exclude-paths filtering, max_files and max_chars truncation
  */
 
-import { Octokit } from '@octokit/rest';
+import { readFileSync } from 'node:fs';
+import { createGitHubClient } from './client.js';
 import { logger } from '../utils/logger.js';
 
 export interface GitHubConfig {
@@ -29,6 +30,10 @@ export interface TruncationInfo {
   truncatedChars: number;
   wasTruncated: boolean;
   truncationReason?: string | undefined;
+  /** Number of files skipped via exclude-paths patterns (optional, additive) */
+  filesExcluded?: number | undefined;
+  /** Number of files with no reviewable patch, e.g. binary or too large (optional, additive) */
+  filesWithoutPatch?: number | undefined;
 }
 
 export interface NormalizedDiff {
@@ -39,17 +44,10 @@ export interface NormalizedDiff {
 }
 
 /**
- * Create Octokit instance
- */
-function createOctokit(token: string): Octokit {
-  return new Octokit({ auth: token });
-}
-
-/**
  * Fetch PR head SHA
  */
 export async function getPRHeadSha(config: GitHubConfig): Promise<string> {
-  const octokit = createOctokit(config.token);
+  const octokit = createGitHubClient(config.token);
 
   const { data } = await octokit.pulls.get({
     owner: config.owner,
@@ -61,16 +59,16 @@ export async function getPRHeadSha(config: GitHubConfig): Promise<string> {
 }
 
 /**
- * Fetch PR diff files
+ * Fetch PR diff files (paginated — PRs can have more than 100 files)
  */
 export async function getPRFiles(config: GitHubConfig): Promise<FileDiff[]> {
-  const octokit = createOctokit(config.token);
+  const octokit = createGitHubClient(config.token);
 
-  const { data } = await octokit.pulls.listFiles({
+  const data = await octokit.paginate(octokit.pulls.listFiles, {
     owner: config.owner,
     repo: config.repo,
     pull_number: config.prNumber,
-    per_page: 100, // GitHub API limit
+    per_page: 100,
   });
 
   return data.map((file) => ({
@@ -105,41 +103,132 @@ function buildCombinedDiff(files: FileDiff[]): string {
     .join('\n\n');
 }
 
+// --- Glob matching (dependency-free) for exclude-paths ---
+
 /**
- * Normalize diff with max_files and max_chars truncation
+ * Convert a glob pattern to an anchored RegExp.
+ * - `**` matches any characters including `/` (a `**` / segment also matches
+ *   zero directories, so `**\/foo` matches both `foo` and `a/b/foo`)
+ * - `*` matches any characters except `/`
+ * - `?` matches a single non-`/` character
+ * - All regex metacharacters are escaped; the pattern is anchored at both ends.
  */
-export async function normalizeDiff(
-  config: GitHubConfig,
-  maxFiles: number,
-  maxChars: number
-): Promise<NormalizedDiff> {
-  logger.info('Fetching PR diff', {
-    owner: config.owner,
-    repo: config.repo,
-    prNumber: config.prNumber,
+export function globToRegExp(pattern: string): RegExp {
+  let source = '^';
+  let i = 0;
+
+  while (i < pattern.length) {
+    const ch = pattern[i]!;
+
+    if (ch === '*') {
+      if (pattern[i + 1] === '*') {
+        if (pattern[i + 2] === '/') {
+          // '**/' — zero or more whole directory segments
+          source += '(?:.*/)?';
+          i += 3;
+        } else {
+          // '**' — anything, including '/'
+          source += '.*';
+          i += 2;
+        }
+      } else {
+        // '*' — anything except '/'
+        source += '[^/]*';
+        i += 1;
+      }
+    } else if (ch === '?') {
+      source += '[^/]';
+      i += 1;
+    } else if ('\\^$.|+()[]{}'.includes(ch)) {
+      source += `\\${ch}`;
+      i += 1;
+    } else {
+      source += ch;
+      i += 1;
+    }
+  }
+
+  return new RegExp(`${source}$`);
+}
+
+/**
+ * Check whether a path matches any of the given glob patterns.
+ * A pattern without '/' also matches against the path's basename
+ * (so `*.min.js` excludes `src/app.min.js`).
+ */
+export function isPathExcluded(path: string, patterns: string[]): boolean {
+  return patterns.some((pattern) => {
+    const regex = globToRegExp(pattern);
+    if (regex.test(path)) {
+      return true;
+    }
+    if (!pattern.includes('/')) {
+      const basename = path.split('/').pop() ?? path;
+      return regex.test(basename);
+    }
+    return false;
   });
+}
 
-  const [headSha, allFiles] = await Promise.all([
-    getPRHeadSha(config),
-    getPRFiles(config),
-  ]);
+// --- Pure truncation / limiting logic (exported for testability) ---
 
+export interface DiffLimitsResult {
+  files: FileDiff[];
+  combinedDiff: string;
+  truncation: TruncationInfo;
+}
+
+/**
+ * Apply exclude-paths filtering, max_files and max_chars limits to a file list.
+ * Pure function: no I/O, fully unit-testable.
+ */
+export function applyLimits(
+  allFiles: FileDiff[],
+  maxFiles: number,
+  maxChars: number,
+  excludePatterns?: string[]
+): DiffLimitsResult {
   const filesFound = allFiles.length;
-  let truncationReason: string | undefined;
+  const reasons: string[] = [];
 
-  // Step 1: Limit number of files
+  // Step 1: exclude-paths filtering (before max-files logic)
   let files = allFiles;
+  let filesExcluded = 0;
+  if (excludePatterns !== undefined && excludePatterns.length > 0) {
+    files = files.filter((f) => !isPathExcluded(f.filename, excludePatterns));
+    filesExcluded = filesFound - files.length;
+    if (filesExcluded > 0) {
+      reasons.push(`excluded ${filesExcluded} file(s) by exclude-paths`);
+      logger.info('Excluded files by exclude-paths', {
+        excluded: filesExcluded,
+        remaining: files.length,
+      });
+    }
+  }
+
+  // Step 2: count files without a reviewable patch (binary or too large).
+  // These are silently dropped by buildCombinedDiff, so surface them.
+  const filesWithoutPatch = files.filter((f) => !f.patch).length;
+  if (filesWithoutPatch > 0) {
+    reasons.push(
+      `${filesWithoutPatch} file(s) had no reviewable diff (binary or too large)`
+    );
+    logger.info('Files without reviewable patch', { count: filesWithoutPatch });
+  }
+
+  // Step 3: limit number of files
+  const candidateCount = files.length;
   if (files.length > maxFiles) {
     // Prioritize files with patches, then by change size
     files = files
       .filter((f) => f.patch)
       .sort((a, b) => (b.additions + b.deletions) - (a.additions + a.deletions))
       .slice(0, maxFiles);
-    truncationReason = `Limited to ${maxFiles} files (found ${filesFound})`;
-    logger.info('Truncated file count', { found: filesFound, limited: maxFiles });
+    reasons.push(`Limited to ${maxFiles} files (found ${candidateCount})`);
+    logger.info('Truncated file count', { found: candidateCount, limited: maxFiles });
   }
 
-  // Step 2: Build diff and check char limit
+  // Step 4: build diff and check char limit
   let combinedDiff = buildCombinedDiff(files);
   const originalChars = combinedDiff.length;
 
@@ -152,25 +241,53 @@ export async function normalizeDiff(
       combinedDiff = combinedDiff.slice(0, lastDiffMarker);
     }
 
-    const charReason = `Truncated to ${maxChars} chars (original ${originalChars})`;
-    truncationReason = truncationReason
-      ? `${truncationReason}; ${charReason}`
-      : charReason;
-
+    reasons.push(`Truncated to ${maxChars} chars (original ${originalChars})`);
     logger.info('Truncated diff content', {
       original: originalChars,
-      truncated: combinedDiff.length
+      truncated: combinedDiff.length,
     });
   }
 
   const truncation: TruncationInfo = {
     filesFound,
-    filesReviewed: files.length,
+    filesReviewed: files.filter((f) => f.patch).length,
     originalChars,
     truncatedChars: combinedDiff.length,
-    wasTruncated: !!truncationReason,
-    truncationReason,
+    wasTruncated: reasons.length > 0,
+    truncationReason: reasons.length > 0 ? reasons.join('; ') : undefined,
+    ...(filesExcluded > 0 ? { filesExcluded } : {}),
+    ...(filesWithoutPatch > 0 ? { filesWithoutPatch } : {}),
   };
+
+  return { files, combinedDiff, truncation };
+}
+
+/**
+ * Normalize diff with exclude-paths filtering and max_files/max_chars truncation
+ */
+export async function normalizeDiff(
+  config: GitHubConfig,
+  maxFiles: number,
+  maxChars: number,
+  excludePatterns?: string[]
+): Promise<NormalizedDiff> {
+  logger.info('Fetching PR diff', {
+    owner: config.owner,
+    repo: config.repo,
+    prNumber: config.prNumber,
+  });
+
+  const [headSha, allFiles] = await Promise.all([
+    getPRHeadSha(config),
+    getPRFiles(config),
+  ]);
+
+  const { files, combinedDiff, truncation } = applyLimits(
+    allFiles,
+    maxFiles,
+    maxChars,
+    excludePatterns
+  );
 
   logger.info('PR diff normalized', {
     filesFound: truncation.filesFound,
@@ -222,28 +339,88 @@ export function isLineInDiff(line: number, hunks: DiffHunkRange[]): boolean {
   return hunks.some((h) => line >= h.startLine && line <= h.endLine);
 }
 
-/**
- * Get GitHub config from environment variables
- */
-export function getConfigFromEnv(): GitHubConfig {
-  const token = process.env['GITHUB_TOKEN'];
-  const repository = process.env['GITHUB_REPOSITORY'];
-  const prNumber = process.env['PR_NUMBER'] ?? process.env['GITHUB_REF_NAME']?.match(/\d+/)?.[0];
+// --- Environment / event resolution ---
 
-  if (!token) {
-    throw new Error('GITHUB_TOKEN environment variable is required');
+/**
+ * Resolve the PR number from the environment:
+ * 1. Explicit PR_NUMBER env var
+ * 2. GitHub event payload at GITHUB_EVENT_PATH (.pull_request.number ?? .number)
+ * 3. GITHUB_REF_NAME, only when it strictly matches "<digits>/merge"
+ */
+export function resolvePrNumber(env: Record<string, string | undefined>): number {
+  // 1. Explicit PR_NUMBER
+  const explicit = env['PR_NUMBER'];
+  if (explicit !== undefined && explicit.trim().length > 0) {
+    const trimmed = explicit.trim();
+    if (!/^\d+$/.test(trimmed)) {
+      throw new Error(`PR_NUMBER must be a positive integer, got '${explicit}'`);
+    }
+    const parsed = Number.parseInt(trimmed, 10);
+    if (parsed <= 0) {
+      throw new Error(`PR_NUMBER must be a positive integer, got '${explicit}'`);
+    }
+    return parsed;
   }
 
+  // 2. Event payload
+  const eventPath = env['GITHUB_EVENT_PATH'];
+  if (eventPath) {
+    try {
+      const payload = JSON.parse(readFileSync(eventPath, 'utf8')) as {
+        pull_request?: { number?: number | undefined } | undefined;
+        number?: number | undefined;
+      };
+      const eventNumber = payload.pull_request?.number ?? payload.number;
+      if (
+        typeof eventNumber === 'number' &&
+        Number.isInteger(eventNumber) &&
+        eventNumber > 0
+      ) {
+        return eventNumber;
+      }
+      logger.warn('Event payload has no PR number', { eventPath });
+    } catch (error) {
+      logger.warn('Could not read PR number from GITHUB_EVENT_PATH', {
+        eventPath,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  // 3. Strict ref-name match ("123/merge" only — never digits inside branch names)
+  const refName = env['GITHUB_REF_NAME'];
+  if (refName) {
+    const refMatch = /^(\d+)\/merge$/.exec(refName);
+    if (refMatch?.[1]) {
+      return Number.parseInt(refMatch[1], 10);
+    }
+  }
+
+  throw new Error(
+    'Could not determine PR number: set PR_NUMBER, run on a pull_request event ' +
+      '(GITHUB_EVENT_PATH), or use a "<number>/merge" GITHUB_REF_NAME'
+  );
+}
+
+/**
+ * Get GitHub config from a token and environment variables.
+ * The token is passed explicitly by the caller (action input) instead of
+ * being read from a mutated process.env.
+ */
+export function getConfigFromEnv(
+  token: string,
+  env: Record<string, string | undefined> = process.env
+): GitHubConfig {
+  if (!token) {
+    throw new Error('GitHub token is required');
+  }
+
+  const repository = env['GITHUB_REPOSITORY'];
   if (!repository) {
     throw new Error('GITHUB_REPOSITORY environment variable is required');
   }
 
-  if (!prNumber) {
-    throw new Error('PR_NUMBER or valid GITHUB_REF_NAME is required');
-  }
-
   const [owner, repo] = repository.split('/');
-
   if (!owner || !repo) {
     throw new Error('Invalid GITHUB_REPOSITORY format (expected owner/repo)');
   }
@@ -252,6 +429,6 @@ export function getConfigFromEnv(): GitHubConfig {
     token,
     owner,
     repo,
-    prNumber: Number.parseInt(prNumber, 10),
+    prNumber: resolvePrNumber(env),
   };
 }

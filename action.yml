@@ -59,6 +59,22 @@ inputs:
     description: 'Review output mode: "summary" posts a single PR comment, "inline" posts review comments on specific diff lines'
     required: false
     default: 'summary'
+  exclude-paths:
+    description: >-
+      Glob patterns for files to exclude from review (CSV, multiline, or JSON array).
+      When empty, defaults to: **/package-lock.json, **/yarn.lock, **/pnpm-lock.yaml,
+      **/*.min.js, **/*.min.css, **/*.snap, **/dist/**, **/build/**, **/vendor/**.
+      Set to the literal value "none" (case-insensitive) to disable all exclusions.
+    required: false
+    default: ''
+
+outputs:
+  total-tokens:
+    description: 'Total LLM tokens used across all scanners and the judge'
+  findings-count:
+    description: 'Number of inline findings produced by the judge (0 in summary mode or when parsing fails)'
+  scanners-failed:
+    description: 'Number of scanner models that failed'
 
 runs:
   using: 'node20'

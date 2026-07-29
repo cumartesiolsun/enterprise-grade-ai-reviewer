@@ -42,6 +42,18 @@ export interface JudgeResult {
   findings?: InlineFinding[] | undefined;
 }
 
+/** Maximum number of inline findings posted to a PR. */
+const MAX_FINDINGS = 30;
+/** Maximum length of a finding title (including the ellipsis when truncated). */
+const MAX_TITLE_LENGTH = 300;
+/** Maximum length of a finding body (including the ellipsis when truncated). */
+const MAX_BODY_LENGTH = 4000;
+
+function truncate(text: string, maxLength: number): string {
+  if (text.length <= maxLength) return text;
+  return `${text.slice(0, maxLength - 1)}…`;
+}
+
 /**
  * Attempt to parse the judge's JSON output into InlineFinding[].
  * Returns undefined if parsing fails (caller falls back to summary).
@@ -49,8 +61,9 @@ export interface JudgeResult {
 function extractJsonArray(content: string): string | undefined {
   const trimmed = content.trim();
 
-  // 1. Try as-is (pure JSON)
-  if (trimmed.startsWith('[')) {
+  // 1. Try as-is (pure JSON). Requires a closing bracket too — otherwise the
+  // model appended trailing prose and we must fall through to extraction.
+  if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
     return trimmed;
   }
 
@@ -71,13 +84,23 @@ function extractJsonArray(content: string): string | undefined {
   return undefined;
 }
 
-function parseSources(rec: Record<string, unknown>): string[] | undefined {
+function parseSources(
+  rec: Record<string, unknown>,
+  validModels: readonly string[]
+): string[] | undefined {
   if (!Array.isArray(rec['sources'])) return undefined;
-  const filtered = (rec['sources'] as unknown[]).filter((s): s is string => typeof s === 'string');
+  // Whitelist: sources come from model output (ultimately attacker-influenced
+  // via the diff), so only keep names of scanners that actually ran.
+  const filtered = (rec['sources'] as unknown[]).filter(
+    (s): s is string => typeof s === 'string' && validModels.includes(s)
+  );
   return filtered.length > 0 ? filtered : undefined;
 }
 
-function validateFindingItem(item: unknown): InlineFinding | undefined {
+function validateFindingItem(
+  item: unknown,
+  validModels: readonly string[]
+): InlineFinding | undefined {
   if (typeof item !== 'object' || item === null) return undefined;
 
   const required = ['file', 'line', 'severity', 'title', 'body'] as const;
@@ -96,19 +119,22 @@ function validateFindingItem(item: unknown): InlineFinding | undefined {
     return undefined;
   }
 
-  const sources = parseSources(rec);
+  const sources = parseSources(rec, validModels);
 
   return {
     file: rec['file'],
     line: rec['line'],
     severity,
-    title: rec['title'],
-    body: rec['body'],
+    title: truncate(rec['title'], MAX_TITLE_LENGTH),
+    body: truncate(rec['body'], MAX_BODY_LENGTH),
     ...(sources ? { sources } : {}),
   };
 }
 
-function parseInlineFindings(content: string): InlineFinding[] | undefined {
+function parseInlineFindings(
+  content: string,
+  validModels: readonly string[]
+): InlineFinding[] | undefined {
   try {
     const jsonStr = extractJsonArray(content);
 
@@ -127,12 +153,30 @@ function parseInlineFindings(content: string): InlineFinding[] | undefined {
     const findings: InlineFinding[] = [];
 
     for (const item of parsed) {
-      const finding = validateFindingItem(item);
+      const finding = validateFindingItem(item, validModels);
       if (finding) {
         findings.push(finding);
       } else {
         logger.warn('Skipping invalid finding item', { item });
       }
+    }
+
+    // The judge produced findings but none survived validation. Returning []
+    // here would post a false "LGTM" all-clear — fall back to summary instead.
+    if (parsed.length > 0 && findings.length === 0) {
+      logger.warn('All parsed finding items were invalid, falling back to summary', {
+        itemCount: parsed.length,
+      });
+      return undefined;
+    }
+
+    if (findings.length > MAX_FINDINGS) {
+      logger.warn('Capping inline findings', {
+        total: findings.length,
+        kept: MAX_FINDINGS,
+        dropped: findings.length - MAX_FINDINGS,
+      });
+      return findings.slice(0, MAX_FINDINGS);
     }
 
     return findings;
@@ -208,7 +252,8 @@ export async function runJudge(
     // Parse findings for inline mode
     let findings: InlineFinding[] | undefined;
     if (config.reviewMode === 'inline') {
-      findings = parseInlineFindings(content);
+      const validModels = successfulScanners.map((r) => r.model);
+      findings = parseInlineFindings(content, validModels);
       logger.info('Inline findings parsed', {
         findingsCount: findings?.length ?? 0,
         parsedSuccessfully: findings !== undefined,
