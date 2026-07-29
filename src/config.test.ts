@@ -36,6 +36,15 @@ describe('getInput', () => {
   it('returns the default when the env var is not set', () => {
     expect(getInput({}, 'language', 'tr')).toBe('tr');
   });
+
+  it('returns the default when the env var is an empty string (unset ${{ vars.* }})', () => {
+    // Workflows pass `input: ${{ vars.SOME_VAR }}`; an unset variable arrives
+    // as '' and must fall back to the default instead of overriding it.
+    expect(getInput({ 'INPUT_BASE-URL': '' }, 'base-url', 'https://openrouter.ai/api/v1')).toBe(
+      'https://openrouter.ai/api/v1'
+    );
+    expect(getInput({ 'INPUT_MAX-FILES': '' }, 'max-files', '10')).toBe('10');
+  });
 });
 
 describe('getRequiredInput', () => {

@@ -1,0 +1,77 @@
+# Enterprise-Grade AI Reviewer — copy-paste workflow
+#
+# Setup:
+#   1. Save this file as .github/workflows/ai-review.yml in your repository.
+#   2. Add the OPENROUTER_API_KEY secret:
+#      Settings → Secrets and variables → Actions → New repository secret
+#   3. Adjust the models below — any OpenRouter model ID works.
+#
+# Hardening tip: pin `uses:` to a full commit SHA instead of @latest
+# (see the "Security & Hardening" section of the README).
+
+name: AI PR Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+# Cancel superseded runs on rapid pushes — every run costs LLM tokens.
+concurrency:
+  group: ai-review-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    # Skip draft PRs (delete this line if you want drafts reviewed too).
+    if: github.event.pull_request.draft == false
+    steps:
+      - name: Multi-LLM AI Review
+        uses: cumartesiolsun/enterprise-grade-ai-reviewer@latest
+        with:
+          openrouter-api-key: ${{ secrets.OPENROUTER_API_KEY }}
+          github-token: ${{ github.token }}
+
+          # With 3+ scanners, roles default to a security/logic/performance
+          # round-robin automatically (override with scanner-roles below).
+          scanner-models: |
+            anthropic/claude-3-haiku
+            openai/gpt-4o-mini
+            google/gemini-flash-1.5
+          judge-model: anthropic/claude-3-sonnet
+
+          # ---------- Optional settings (uncomment to override) ----------
+
+          # Review output language. Default: tr (Turkish).
+          language: en
+
+          # Post findings as per-line review comments instead of one summary
+          # comment. Default: summary.
+          # review-mode: inline
+
+          # Explicit role per scanner (same order as scanner-models), or a
+          # single value applied to all. Valid: security, logic, performance,
+          # general. Default: general for 1-2 models, round-robin for 3+.
+          # scanner-roles: |
+          #   security
+          #   logic
+          #   performance
+
+          # Diff size limits. Larger values review more code but cost more
+          # tokens per scanner. Defaults: 10 files / 80000 chars.
+          # max-files: "10"
+          # max-chars: "80000"
+
+          # Glob patterns to skip. The default already excludes lockfiles,
+          # minified assets, snapshots, and dist/build/vendor output.
+          # Set to "none" to disable all exclusions.
+          # exclude-paths: |
+          #   **/*.generated.ts
+          #   docs/**
+
+          # Marker used to find and update the action's own PR comment.
+          # comment-marker: "ENTERPRISE_AI_REVIEW"

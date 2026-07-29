@@ -75,6 +75,8 @@ Traditional code review tools use a single AI model, which creates a single poin
 
 ### Basic Configuration
 
+> 📋 A complete copy-paste workflow with every option documented is available at [`examples/ai-review.yml`](examples/ai-review.yml).
+
 ```yaml
 name: AI Code Review
 on:

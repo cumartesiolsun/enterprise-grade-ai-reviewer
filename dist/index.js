@@ -1570,7 +1570,12 @@ const COMMENT_MARKER_PATTERN = /^[A-Za-z0-9_-]+$/;
 function getInput(env, name, defaultValue) {
     // GitHub Actions: github-token -> INPUT_GITHUB-TOKEN (hyphens preserved)
     const envName = `INPUT_${name.toUpperCase()}`;
-    return env[envName] ?? defaultValue;
+    const value = env[envName];
+    // Empty string counts as "not provided": workflows commonly pass
+    // `input: ${{ vars.SOME_VAR }}` where the variable may be unset, which
+    // arrives as '' and must not override the documented default (e.g. an
+    // empty base-url would produce an invalid request URL).
+    return value == null || value === '' ? defaultValue : value;
 }
 /**
  * Get required input (throws if missing)
