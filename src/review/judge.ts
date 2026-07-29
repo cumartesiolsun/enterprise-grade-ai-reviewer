@@ -31,6 +31,8 @@ export interface JudgeConfig {
   maxTokens: number;
   language: string;
   reviewMode: ReviewMode;
+  /** PR title/body context forwarded to the judge prompts (default ''). */
+  prContext?: string | undefined;
 }
 
 export interface JudgeResult {
@@ -224,9 +226,10 @@ export async function runJudge(
       ? buildJudgeSystemPromptInline(config.language)
       : buildJudgeSystemPrompt(config.language);
 
+    const prContext = config.prContext ?? '';
     const userPrompt = config.reviewMode === 'inline'
-      ? buildJudgeUserPromptInline(scannerResults, diff)
-      : buildJudgeUserPrompt(scannerResults, diff);
+      ? buildJudgeUserPromptInline(scannerResults, diff, prContext)
+      : buildJudgeUserPrompt(scannerResults, diff, prContext);
 
     const messages: ChatMessage[] = [
       { role: 'system', content: systemPrompt },

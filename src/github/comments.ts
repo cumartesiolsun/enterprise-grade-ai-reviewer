@@ -68,7 +68,7 @@ function getStatusBadge(result: ScannerResult): string {
     case 'OK':
       return '✅ OK';
     case 'SKIPPED':
-      return '⏭️ SKIPPED (empty/LGTM)';
+      return '⏭️ SKIPPED (empty/NO_FINDINGS)';
     case 'FAILED':
       return `❌ FAILED (${result.error ?? 'unknown error'})`;
     default:
@@ -125,7 +125,7 @@ export function buildCommentBody(
   for (const result of data.scannerResults) {
     const count = contributions.get(result.model);
     const contrib = count ? ` — contributed to ${count} finding(s)` : '';
-    sections.push(`- \`${result.model}\`: ${getStatusBadge(result)}${contrib}`);
+    sections.push(`- \`${result.model}\` (${result.role}): ${getStatusBadge(result)}${contrib}`);
   }
   sections.push('');
 
@@ -350,7 +350,7 @@ function buildInlineReviewBody(
   for (const result of scannerResults) {
     const count = contributions.get(result.model);
     const contrib = count ? ` — contributed to ${count} finding(s)` : '';
-    bodyLines.push(`- \`${result.model}\`: ${getStatusBadge(result)}${contrib}`);
+    bodyLines.push(`- \`${result.model}\` (${result.role}): ${getStatusBadge(result)}${contrib}`);
   }
   bodyLines.push('');
 

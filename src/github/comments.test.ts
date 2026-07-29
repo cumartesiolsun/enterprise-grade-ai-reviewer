@@ -55,6 +55,7 @@ function makeScannerResult(
     durationMs: 500,
     success: true,
     status: 'OK',
+    role: 'general',
     ...overrides,
   };
 }
@@ -161,7 +162,7 @@ describe('buildCommentBody', () => {
       DEFAULT_MARKER
     );
 
-    expect(body).toContain('`model-a`: ✅ OK');
+    expect(body).toContain('`model-a` (general): ✅ OK');
   });
 
   it('shows SKIPPED badge for skipped scanners', () => {
@@ -171,7 +172,7 @@ describe('buildCommentBody', () => {
       DEFAULT_MARKER
     );
 
-    expect(body).toContain('`model-b`: ⏭️ SKIPPED (empty/LGTM)');
+    expect(body).toContain('`model-b` (general): ⏭️ SKIPPED (empty/NO_FINDINGS)');
   });
 
   it('shows FAILED badge with error message for failed scanners', () => {
@@ -188,7 +189,7 @@ describe('buildCommentBody', () => {
       DEFAULT_MARKER
     );
 
-    expect(body).toContain('`model-c`: ❌ FAILED (Rate limit exceeded)');
+    expect(body).toContain('`model-c` (general): ❌ FAILED (Rate limit exceeded)');
   });
 
   it('shows FAILED badge with "unknown error" when no error message is provided', () => {
@@ -204,7 +205,7 @@ describe('buildCommentBody', () => {
       DEFAULT_MARKER
     );
 
-    expect(body).toContain('`model-d`: ❌ FAILED (unknown error)');
+    expect(body).toContain('`model-d` (general): ❌ FAILED (unknown error)');
   });
 
   it('includes truncation notes when wasTruncated is true', () => {
@@ -270,9 +271,9 @@ describe('buildCommentBody', () => {
 
     const body = buildCommentBody(data, DEFAULT_MARKER);
 
-    expect(body).toContain('`model-a`: ✅ OK — contributed to 2 finding(s)');
-    expect(body).toContain('`model-b`: ✅ OK — contributed to 2 finding(s)');
-    expect(body).toContain('`model-c`: ✅ OK — contributed to 1 finding(s)');
+    expect(body).toContain('`model-a` (general): ✅ OK — contributed to 2 finding(s)');
+    expect(body).toContain('`model-b` (general): ✅ OK — contributed to 2 finding(s)');
+    expect(body).toContain('`model-c` (general): ✅ OK — contributed to 1 finding(s)');
   });
 
   it('shows no contribution count when judge output has no (by: ...) tags', () => {
@@ -283,7 +284,7 @@ describe('buildCommentBody', () => {
 
     const body = buildCommentBody(data, DEFAULT_MARKER);
 
-    expect(body).toContain('`model-x`: ✅ OK');
+    expect(body).toContain('`model-x` (general): ✅ OK');
     expect(body).not.toContain('contributed to');
   });
 
@@ -473,7 +474,7 @@ describe('postInlineReview', () => {
 
     expect(reviewArg.comments).toHaveLength(3);
     expect(reviewArg.body).toContain('Found **5** finding(s)');
-    expect(reviewArg.body).toContain('`model-a`: ✅ OK — contributed to 5 finding(s)');
+    expect(reviewArg.body).toContain('`model-a` (general): ✅ OK — contributed to 5 finding(s)');
     expect(reviewArg.body).not.toContain('Found **7**');
     expect(reviewArg.body).not.toContain('contributed to 7 finding(s)');
   });

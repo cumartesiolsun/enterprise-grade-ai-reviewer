@@ -20,6 +20,18 @@ inputs:
   scanner-models:
     description: 'Scanner models (CSV, multiline, or JSON array). Required unless auto-select-models is true.'
     required: true
+  scanner-roles:
+    description: >-
+      Roles for scanner models, in the same three formats as scanner-models
+      (multiline, CSV, or JSON array). Valid values: security, logic,
+      performance, general. A single value applies to all scanners; a list must
+      match the scanner-models length (one role per model, index-aligned). When
+      unset, 1-2 scanners get "general" and 3+ scanners round-robin security,
+      logic, performance across the model list. This is a separate input rather
+      than a "model:role" suffix because OpenRouter model IDs already use ":"
+      for variants (e.g. ":free").
+    required: false
+    default: ''
   judge-model:
     description: 'Model to use for aggregation/judging'
     required: true

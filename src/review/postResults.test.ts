@@ -35,7 +35,7 @@ function makeTruncation(): TruncationInfo {
 }
 
 function makeScanner(model: string = 'scanner-1'): ScannerResult {
-  return { model, output: 'Found issue', tokensUsed: 100, durationMs: 500, success: true, status: 'OK' };
+  return { model, output: 'Found issue', tokensUsed: 100, durationMs: 500, success: true, status: 'OK', role: 'general' };
 }
 
 function makeDiff(): PostResultsDiff {

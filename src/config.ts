@@ -6,6 +6,7 @@
  */
 
 import type { ReviewMode } from './review/judge.js';
+import type { ScannerRole } from './review/prompts.js';
 
 /**
  * Action inputs from environment
@@ -15,6 +16,8 @@ export interface ActionInputs {
   githubToken: string;
   baseUrl: string;
   scannerModels: string[];
+  /** Resolved scanner roles, index-aligned with scannerModels. */
+  scannerRoles: ScannerRole[];
   judgeModel: string;
   language: string;
   autoSelectModels: boolean;
@@ -151,6 +154,73 @@ export function parseScannerModels(input: string): string[] {
   return parseListInput('scanner-models', input);
 }
 
+/** Valid scanner role values for the scanner-roles input. */
+export const VALID_SCANNER_ROLES: readonly ScannerRole[] = [
+  'security',
+  'logic',
+  'performance',
+  'general',
+];
+
+function isScannerRole(value: string): value is ScannerRole {
+  return (VALID_SCANNER_ROLES as readonly string[]).includes(value);
+}
+
+/**
+ * Parse scanner-roles input and resolve it against the scanner model count.
+ * Accepts the same three formats as scanner-models (JSON array, multiline, CSV).
+ *
+ * Resolution rules (result is always index-aligned with scanner-models):
+ * - Empty input: modelCount <= 2 -> every scanner gets 'general';
+ *   modelCount >= 3 -> round-robin security, logic, performance.
+ * - Exactly one value: that role is broadcast to every scanner.
+ * - Multiple values: length must equal modelCount, otherwise throws.
+ */
+export function parseScannerRoles(input: string, modelCount: number): ScannerRole[] {
+  const entries = parseListInput('scanner-roles', input);
+
+  const roles: ScannerRole[] = entries.map((entry) => {
+    const normalized = entry.toLowerCase();
+    if (!isScannerRole(normalized)) {
+      throw new Error(
+        `Input 'scanner-roles' contains invalid value '${entry}'. ` +
+          `Valid values: ${VALID_SCANNER_ROLES.join(', ')}.`
+      );
+    }
+    return normalized;
+  });
+
+  // Not provided: smart default. Small setups keep current behavior (general);
+  // 3+ scanners round-robin the specialized roles.
+  if (roles.length === 0) {
+    if (modelCount <= 2) {
+      return Array.from({ length: modelCount }, () => 'general' as ScannerRole);
+    }
+    const cycle: readonly ScannerRole[] = ['security', 'logic', 'performance'];
+    return Array.from(
+      { length: modelCount },
+      (_, i) => cycle[i % cycle.length] as ScannerRole
+    );
+  }
+
+  // Single value: broadcast to every scanner.
+  if (roles.length === 1) {
+    const role = roles[0] as ScannerRole;
+    return Array.from({ length: modelCount }, () => role);
+  }
+
+  // Multiple values: must be index-aligned with scanner-models.
+  if (roles.length !== modelCount) {
+    throw new Error(
+      `Input 'scanner-roles' has ${roles.length} entries but scanner-models has ` +
+        `${modelCount} — provide one role per model, a single role for all ` +
+        'scanners, or leave it empty for the default assignment.'
+    );
+  }
+
+  return roles;
+}
+
 /**
  * Parse exclude-paths input.
  * - Empty input -> DEFAULT_EXCLUDE_PATHS
@@ -200,6 +270,12 @@ export function parseInputs(env: Record<string, string | undefined>): ActionInpu
     throw new Error("Required input 'judge-model' is missing.");
   }
 
+  // Resolve scanner roles against the parsed model list (index-aligned)
+  const scannerRoles = parseScannerRoles(
+    getInput(env, 'scanner-roles', ''),
+    scannerModels.length
+  );
+
   // Parse and validate review mode
   const reviewModeRaw = getInput(env, 'review-mode', 'summary').toLowerCase();
   if (reviewModeRaw !== 'summary' && reviewModeRaw !== 'inline') {
@@ -224,6 +300,7 @@ export function parseInputs(env: Record<string, string | undefined>): ActionInpu
     githubToken: getRequiredInput(env, 'github-token'),
     baseUrl: getInput(env, 'base-url', 'https://openrouter.ai/api/v1'),
     scannerModels,
+    scannerRoles,
     judgeModel,
     language: getInput(env, 'language', 'tr'),
     autoSelectModels,

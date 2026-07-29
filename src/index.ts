@@ -4,7 +4,7 @@
  */
 
 import { parseInputs, getInput } from './config.js';
-import { normalizeDiff, getConfigFromEnv } from './github/diff.js';
+import { normalizeDiff, getConfigFromEnv, getPRContextFromEnv } from './github/diff.js';
 import type { GitHubConfig, NormalizedDiff, TruncationInfo } from './github/diff.js';
 import { postOrUpdateComment } from './github/comments.js';
 import { runScanners } from './review/scanner.js';
@@ -130,6 +130,11 @@ async function run(): Promise<void> {
       prNumber: githubConfig.prNumber,
     });
 
+    // PR title/body context for the models. Log only its length — PR bodies
+    // are untrusted input and must never be echoed into the logs.
+    const prContext = getPRContextFromEnv();
+    logger.info('PR context extracted', { prContextLength: prContext.length });
+
     // Set up OpenRouter config
     const openrouterConfig: OpenRouterConfig = {
       apiKey: inputs.openrouterApiKey,
@@ -179,6 +184,8 @@ async function run(): Promise<void> {
       models: inputs.scannerModels,
       maxTokens: inputs.maxTokensScanner,
       language: inputs.language,
+      roles: inputs.scannerRoles,
+      prContext,
     };
 
     scannerResults = await runScanners(scannerConfig, diff.combinedDiff);
@@ -220,6 +227,7 @@ async function run(): Promise<void> {
       maxTokens: inputs.maxTokensJudge,
       language: inputs.language,
       reviewMode: inputs.reviewMode,
+      prContext,
     };
 
     const judgeResult = await runJudge(judgeConfig, scannerResults, diff.combinedDiff);

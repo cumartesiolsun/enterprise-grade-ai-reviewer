@@ -6,6 +6,7 @@ import {
   parsePositiveInt,
   parseListInput,
   parseScannerModels,
+  parseScannerRoles,
   parseExcludePaths,
   parseInputs,
 } from './config.js';
@@ -127,6 +128,88 @@ describe('parseScannerModels / parseListInput', () => {
   });
 });
 
+describe('parseScannerRoles', () => {
+  it('parses a JSON array', () => {
+    expect(parseScannerRoles('["security", "logic"]', 2)).toEqual([
+      'security',
+      'logic',
+    ]);
+  });
+
+  it('parses multiline input', () => {
+    expect(parseScannerRoles('security\nlogic\nperformance\n', 3)).toEqual([
+      'security',
+      'logic',
+      'performance',
+    ]);
+  });
+
+  it('parses CSV input', () => {
+    expect(parseScannerRoles('security, logic ,general', 3)).toEqual([
+      'security',
+      'logic',
+      'general',
+    ]);
+  });
+
+  it('normalizes values case-insensitively', () => {
+    expect(parseScannerRoles('Security,LOGIC,General', 3)).toEqual([
+      'security',
+      'logic',
+      'general',
+    ]);
+  });
+
+  it('throws on an invalid value, naming it and listing the valid ones', () => {
+    expect(() => parseScannerRoles('security,speling', 2)).toThrow(
+      "Input 'scanner-roles' contains invalid value 'speling'. " +
+        'Valid values: security, logic, performance, general.'
+    );
+  });
+
+  it('broadcasts a single value to every scanner', () => {
+    expect(parseScannerRoles('security', 3)).toEqual([
+      'security',
+      'security',
+      'security',
+    ]);
+  });
+
+  it('throws on a length mismatch, stating both lengths', () => {
+    expect(() => parseScannerRoles('security,logic', 3)).toThrow(
+      "Input 'scanner-roles' has 2 entries but scanner-models has 3"
+    );
+  });
+
+  describe('smart default (empty input)', () => {
+    it('assigns general to a single scanner', () => {
+      expect(parseScannerRoles('', 1)).toEqual(['general']);
+    });
+
+    it('assigns general to two scanners', () => {
+      expect(parseScannerRoles('', 2)).toEqual(['general', 'general']);
+    });
+
+    it('round-robins the specialized roles for three scanners', () => {
+      expect(parseScannerRoles('', 3)).toEqual([
+        'security',
+        'logic',
+        'performance',
+      ]);
+    });
+
+    it('wraps the round-robin for five scanners', () => {
+      expect(parseScannerRoles('', 5)).toEqual([
+        'security',
+        'logic',
+        'performance',
+        'security',
+        'logic',
+      ]);
+    });
+  });
+});
+
 describe('parseExcludePaths', () => {
   it('returns the default patterns when input is empty', () => {
     expect(parseExcludePaths('')).toEqual(DEFAULT_EXCLUDE_PATHS);
@@ -168,6 +251,7 @@ describe('parseInputs', () => {
       githubToken: 'ghp_test',
       baseUrl: 'https://openrouter.ai/api/v1',
       scannerModels: ['openai/gpt-4o', 'anthropic/claude-3.5-sonnet'],
+      scannerRoles: ['general', 'general'],
       judgeModel: 'openai/gpt-4o',
       language: 'tr',
       autoSelectModels: false,
@@ -186,6 +270,7 @@ describe('parseInputs', () => {
     const env = baseEnv({
       'INPUT_BASE-URL': 'https://proxy.example.com/v1',
       'INPUT_SCANNER-MODELS': '["a/one", "b/two"]',
+      'INPUT_SCANNER-ROLES': 'security,logic',
       'INPUT_JUDGE-MODEL': 'c/judge',
       'INPUT_LANGUAGE': 'en',
       'INPUT_MAX-FILES': '25',
@@ -203,6 +288,7 @@ describe('parseInputs', () => {
       githubToken: 'ghp_test',
       baseUrl: 'https://proxy.example.com/v1',
       scannerModels: ['a/one', 'b/two'],
+      scannerRoles: ['security', 'logic'],
       judgeModel: 'c/judge',
       language: 'en',
       autoSelectModels: false,
@@ -215,6 +301,44 @@ describe('parseInputs', () => {
       reviewMode: 'inline',
       excludePaths: ['**/*.lock', 'generated/**'],
     });
+  });
+
+  it('resolves scanner-roles by default against the parsed model list', () => {
+    const env = baseEnv({
+      'INPUT_SCANNER-MODELS': 'a/one,b/two,c/three',
+    });
+    expect(parseInputs(env).scannerRoles).toEqual([
+      'security',
+      'logic',
+      'performance',
+    ]);
+  });
+
+  it('resolves an explicit scanner-roles input', () => {
+    const env = baseEnv({
+      'INPUT_SCANNER-MODELS': 'a/one,b/two,c/three',
+      'INPUT_SCANNER-ROLES': 'general,Security,logic',
+    });
+    expect(parseInputs(env).scannerRoles).toEqual([
+      'general',
+      'security',
+      'logic',
+    ]);
+  });
+
+  it('broadcasts a single scanner-roles value across all models', () => {
+    const env = baseEnv({ 'INPUT_SCANNER-ROLES': 'performance' });
+    expect(parseInputs(env).scannerRoles).toEqual(['performance', 'performance']);
+  });
+
+  it('throws when scanner-roles length does not match scanner-models length', () => {
+    const env = baseEnv({
+      'INPUT_SCANNER-MODELS': 'a/one,b/two,c/three',
+      'INPUT_SCANNER-ROLES': 'security,logic',
+    });
+    expect(() => parseInputs(env)).toThrow(
+      "Input 'scanner-roles' has 2 entries but scanner-models has 3"
+    );
   });
 
   it('accepts review-mode case-insensitively', () => {

@@ -7,6 +7,7 @@ import {
   isLineInDiff,
   getConfigFromEnv,
   resolvePrNumber,
+  getPRContextFromEnv,
   globToRegExp,
   isPathExcluded,
   applyLimits,
@@ -291,6 +292,152 @@ describe('resolvePrNumber', () => {
     expect(() => resolvePrNumber({})).toThrow(
       'Could not determine PR number: set PR_NUMBER, run on a pull_request event'
     );
+  });
+});
+
+describe('getPRContextFromEnv', () => {
+  let tempDir: string | undefined;
+
+  afterEach(() => {
+    if (tempDir !== undefined) {
+      rmSync(tempDir, { recursive: true, force: true });
+      tempDir = undefined;
+    }
+  });
+
+  function writeEventFile(content: unknown): string {
+    tempDir = mkdtempSync(join(tmpdir(), 'ai-reviewer-context-test-'));
+    const eventPath = join(tempDir, 'event.json');
+    const raw = typeof content === 'string' ? content : JSON.stringify(content);
+    writeFileSync(eventPath, raw, 'utf8');
+    return eventPath;
+  }
+
+  it('builds "Title: <title>\\n\\n<body>" when both are present', () => {
+    const eventPath = writeEventFile({
+      pull_request: { title: 'Add retry logic', body: 'Retries failed requests 3 times.' },
+    });
+
+    expect(getPRContextFromEnv({ GITHUB_EVENT_PATH: eventPath })).toBe(
+      'Title: Add retry logic\n\nRetries failed requests 3 times.'
+    );
+  });
+
+  it('uses the "Title: " prefix only for the title part', () => {
+    const eventPath = writeEventFile({
+      pull_request: { title: 'My PR', body: 'Body text.' },
+    });
+
+    const context = getPRContextFromEnv({ GITHUB_EVENT_PATH: eventPath });
+
+    expect(context.startsWith('Title: My PR')).toBe(true);
+    expect(context).not.toContain('Title: Body text.');
+  });
+
+  it('omits the body when it is missing or null', () => {
+    const missing = writeEventFile({ pull_request: { title: 'Only title' } });
+    expect(getPRContextFromEnv({ GITHUB_EVENT_PATH: missing })).toBe('Title: Only title');
+
+    const nulled = writeEventFile({ pull_request: { title: 'Only title', body: null } });
+    expect(getPRContextFromEnv({ GITHUB_EVENT_PATH: nulled })).toBe('Title: Only title');
+  });
+
+  it('omits the title when it is missing or null (no "Title:" prefix)', () => {
+    const eventPath = writeEventFile({
+      pull_request: { title: null, body: 'Just a body.' },
+    });
+
+    expect(getPRContextFromEnv({ GITHUB_EVENT_PATH: eventPath })).toBe('Just a body.');
+  });
+
+  it('returns empty string when both title and body are absent', () => {
+    const eventPath = writeEventFile({ pull_request: { number: 42 } });
+    expect(getPRContextFromEnv({ GITHUB_EVENT_PATH: eventPath })).toBe('');
+  });
+
+  it('returns empty string when the payload has no pull_request', () => {
+    const eventPath = writeEventFile({ number: 42 });
+    expect(getPRContextFromEnv({ GITHUB_EVENT_PATH: eventPath })).toBe('');
+  });
+
+  it('returns empty string when GITHUB_EVENT_PATH is not set', () => {
+    expect(getPRContextFromEnv({})).toBe('');
+  });
+
+  it('returns empty string when the event file does not exist', () => {
+    expect(
+      getPRContextFromEnv({ GITHUB_EVENT_PATH: '/nonexistent/path/event.json' })
+    ).toBe('');
+  });
+
+  it('returns empty string on invalid JSON', () => {
+    const eventPath = writeEventFile('{not valid json');
+    expect(getPRContextFromEnv({ GITHUB_EVENT_PATH: eventPath })).toBe('');
+  });
+
+  it('strips HTML comments from the body', () => {
+    const eventPath = writeEventFile({
+      pull_request: {
+        title: 'Clean PR',
+        body: 'Before <!-- hidden template instructions --> after <!-- another -->end',
+      },
+    });
+
+    const context = getPRContextFromEnv({ GITHUB_EVENT_PATH: eventPath });
+
+    expect(context).not.toContain('hidden template instructions');
+    expect(context).not.toContain('another');
+    expect(context).not.toContain('<!--');
+    expect(context).toContain('Before');
+    expect(context).toContain('end');
+  });
+
+  it('strips an unterminated HTML comment through to the end', () => {
+    const eventPath = writeEventFile({
+      pull_request: {
+        title: 'PR',
+        body: 'Visible part <!-- unterminated injection payload',
+      },
+    });
+
+    const context = getPRContextFromEnv({ GITHUB_EVENT_PATH: eventPath });
+
+    expect(context).toBe('Title: PR\n\nVisible part');
+    expect(context).not.toContain('unterminated injection payload');
+  });
+
+  it('returns only the title when the body is entirely an HTML comment', () => {
+    const eventPath = writeEventFile({
+      pull_request: { title: 'T', body: '<!-- template boilerplate -->' },
+    });
+
+    expect(getPRContextFromEnv({ GITHUB_EVENT_PATH: eventPath })).toBe('Title: T');
+  });
+
+  it('trims leading and trailing whitespace', () => {
+    const eventPath = writeEventFile({
+      pull_request: { body: '\n\n   hello world   \n\n' },
+    });
+
+    expect(getPRContextFromEnv({ GITHUB_EVENT_PATH: eventPath })).toBe('hello world');
+  });
+
+  it('hard-truncates the context to 4000 characters', () => {
+    const eventPath = writeEventFile({
+      pull_request: { title: 'Big', body: 'A'.repeat(5000) },
+    });
+
+    const context = getPRContextFromEnv({ GITHUB_EVENT_PATH: eventPath });
+
+    expect(context).toHaveLength(4000);
+    expect(context.startsWith('Title: Big\n\nAAA')).toBe(true);
+  });
+
+  it('leaves content at exactly 4000 characters untouched', () => {
+    const body = 'B'.repeat(4000);
+    const eventPath = writeEventFile({ pull_request: { body } });
+
+    expect(getPRContextFromEnv({ GITHUB_EVENT_PATH: eventPath })).toBe(body);
   });
 });
 

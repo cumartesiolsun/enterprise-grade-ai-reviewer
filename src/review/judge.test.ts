@@ -24,8 +24,11 @@ vi.mock('./prompts.js', () => ({
 
 import { runJudge } from './judge.js';
 import { callOpenRouter } from '../openrouter/client.js';
+import { buildJudgeUserPrompt, buildJudgeUserPromptInline } from './prompts.js';
 
 const mockedCallOpenRouter = vi.mocked(callOpenRouter);
+const mockedBuildJudgeUserPrompt = vi.mocked(buildJudgeUserPrompt);
+const mockedBuildJudgeUserPromptInline = vi.mocked(buildJudgeUserPromptInline);
 
 function makeConfig(overrides: Partial<JudgeConfig> = {}): JudgeConfig {
   return {
@@ -587,6 +590,74 @@ describe('runJudge', () => {
     expect(finding.title.endsWith('…')).toBe(true);
     expect(finding.body).toHaveLength(4000);
     expect(finding.body.endsWith('…')).toBe(true);
+  });
+
+  it('summary mode: passes prContext as the third argument to buildJudgeUserPrompt', async () => {
+    const config = makeConfig({
+      reviewMode: 'summary',
+      prContext: 'Title: My PR\n\nAdds retry logic.',
+    });
+    const scannerResults = [makeSuccessfulScanner()];
+
+    mockedCallOpenRouter.mockResolvedValueOnce({ content: 'out', tokensUsed: 10 });
+
+    await runJudge(config, scannerResults, 'mock diff content');
+
+    expect(mockedBuildJudgeUserPrompt).toHaveBeenCalledWith(
+      scannerResults,
+      'mock diff content',
+      'Title: My PR\n\nAdds retry logic.'
+    );
+    expect(mockedBuildJudgeUserPromptInline).not.toHaveBeenCalled();
+  });
+
+  it('inline mode: passes prContext as the third argument to buildJudgeUserPromptInline', async () => {
+    const config = makeConfig({
+      reviewMode: 'inline',
+      prContext: 'Title: Inline PR\n\nContext body.',
+    });
+    const scannerResults = [makeSuccessfulScanner()];
+
+    mockedCallOpenRouter.mockResolvedValueOnce({ content: '[]', tokensUsed: 10 });
+
+    await runJudge(config, scannerResults, 'mock diff content');
+
+    expect(mockedBuildJudgeUserPromptInline).toHaveBeenCalledWith(
+      scannerResults,
+      'mock diff content',
+      'Title: Inline PR\n\nContext body.'
+    );
+    expect(mockedBuildJudgeUserPrompt).not.toHaveBeenCalled();
+  });
+
+  it('summary mode: passes empty string when prContext is absent (backward compat)', async () => {
+    const config = makeConfig({ reviewMode: 'summary' });
+    const scannerResults = [makeSuccessfulScanner()];
+
+    mockedCallOpenRouter.mockResolvedValueOnce({ content: 'out', tokensUsed: 10 });
+
+    await runJudge(config, scannerResults, 'mock diff content');
+
+    expect(mockedBuildJudgeUserPrompt).toHaveBeenCalledWith(
+      scannerResults,
+      'mock diff content',
+      ''
+    );
+  });
+
+  it('inline mode: passes empty string when prContext is absent (backward compat)', async () => {
+    const config = makeConfig({ reviewMode: 'inline' });
+    const scannerResults = [makeSuccessfulScanner()];
+
+    mockedCallOpenRouter.mockResolvedValueOnce({ content: '[]', tokensUsed: 10 });
+
+    await runJudge(config, scannerResults, 'mock diff content');
+
+    expect(mockedBuildJudgeUserPromptInline).toHaveBeenCalledWith(
+      scannerResults,
+      'mock diff content',
+      ''
+    );
   });
 
   it('inline mode: leaves short title and body untouched', async () => {

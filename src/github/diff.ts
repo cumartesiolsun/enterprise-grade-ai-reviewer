@@ -342,6 +342,108 @@ export function isLineInDiff(line: number, hunks: DiffHunkRange[]): boolean {
 // --- Environment / event resolution ---
 
 /**
+ * Read and parse the GitHub event payload at GITHUB_EVENT_PATH.
+ * Returns undefined when the path is unset, and warns-and-returns-undefined
+ * when the file is unreadable or not valid JSON.
+ */
+function readEventPayload(
+  env: Record<string, string | undefined>
+): Record<string, unknown> | undefined {
+  const eventPath = env['GITHUB_EVENT_PATH'];
+  if (!eventPath) {
+    return undefined;
+  }
+
+  try {
+    return JSON.parse(readFileSync(eventPath, 'utf8')) as Record<string, unknown>;
+  } catch (error) {
+    logger.warn('Could not read GitHub event payload', {
+      eventPath,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return undefined;
+  }
+}
+
+/** Maximum number of PR title/body characters passed to the models. */
+const MAX_PR_CONTEXT_CHARS = 4000;
+
+/**
+ * Extract PR title and body from the GitHub event payload as review context.
+ *
+ * Produces `Title: <title>\n\n<body>`, omitting either part when absent.
+ * HTML comments are stripped (PR templates leave comment noise, and hidden
+ * comments are an injection vector), including an unterminated `<!--` running
+ * to the end. The result is trimmed and hard-truncated to
+ * MAX_PR_CONTEXT_CHARS. Never throws — any failure yields ''.
+ */
+export function getPRContextFromEnv(
+  env: Record<string, string | undefined> = process.env
+): string {
+  try {
+    const payload = readEventPayload(env);
+    if (!payload) {
+      return '';
+    }
+
+    const pullRequest =
+      typeof payload['pull_request'] === 'object' && payload['pull_request'] !== null
+        ? (payload['pull_request'] as Record<string, unknown>)
+        : undefined;
+    if (!pullRequest) {
+      return '';
+    }
+
+    const title = typeof pullRequest['title'] === 'string' ? pullRequest['title'] : '';
+    const body = typeof pullRequest['body'] === 'string' ? pullRequest['body'] : '';
+
+    const parts: string[] = [];
+    if (title.trim().length > 0) {
+      parts.push(`Title: ${title}`);
+    }
+    if (body.trim().length > 0) {
+      parts.push(body);
+    }
+    if (parts.length === 0) {
+      return '';
+    }
+
+    // Strip HTML comments (non-greedy), including an unterminated '<!--'
+    // that runs to the end of the text.
+    const stripped = parts.join('\n\n').replace(/<!--[\s\S]*?(?:-->|$)/g, '');
+
+    return stripped.trim().slice(0, MAX_PR_CONTEXT_CHARS);
+  } catch (error) {
+    logger.warn('Could not extract PR context from event payload', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return '';
+  }
+}
+
+/**
+ * Extract a positive integer PR number from an event payload
+ * (.pull_request.number ?? .number), or undefined when absent/invalid.
+ */
+function readPrNumberFromPayload(
+  payload: Record<string, unknown>
+): number | undefined {
+  const pullRequest =
+    typeof payload['pull_request'] === 'object' && payload['pull_request'] !== null
+      ? (payload['pull_request'] as Record<string, unknown>)
+      : undefined;
+  const eventNumber = pullRequest?.['number'] ?? payload['number'];
+  if (
+    typeof eventNumber === 'number' &&
+    Number.isInteger(eventNumber) &&
+    eventNumber > 0
+  ) {
+    return eventNumber;
+  }
+  return undefined;
+}
+
+/**
  * Resolve the PR number from the environment:
  * 1. Explicit PR_NUMBER env var
  * 2. GitHub event payload at GITHUB_EVENT_PATH (.pull_request.number ?? .number)
@@ -365,25 +467,13 @@ export function resolvePrNumber(env: Record<string, string | undefined>): number
   // 2. Event payload
   const eventPath = env['GITHUB_EVENT_PATH'];
   if (eventPath) {
-    try {
-      const payload = JSON.parse(readFileSync(eventPath, 'utf8')) as {
-        pull_request?: { number?: number | undefined } | undefined;
-        number?: number | undefined;
-      };
-      const eventNumber = payload.pull_request?.number ?? payload.number;
-      if (
-        typeof eventNumber === 'number' &&
-        Number.isInteger(eventNumber) &&
-        eventNumber > 0
-      ) {
+    const payload = readEventPayload(env);
+    if (payload) {
+      const eventNumber = readPrNumberFromPayload(payload);
+      if (eventNumber !== undefined) {
         return eventNumber;
       }
       logger.warn('Event payload has no PR number', { eventPath });
-    } catch (error) {
-      logger.warn('Could not read PR number from GITHUB_EVENT_PATH', {
-        eventPath,
-        error: error instanceof Error ? error.message : String(error),
-      });
     }
   }
 
