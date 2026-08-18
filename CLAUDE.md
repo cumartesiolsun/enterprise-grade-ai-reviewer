@@ -21,7 +21,7 @@ npm run test:watch     # Vitest (watch mode)
 
 ## Development Workflow
 
-- Requires Node >=20
+- Requires Node >=24 (action runtime is `node24`; the CI/release workflows run Node 24)
 - `dist/index.js` is committed to the repo (GitHub Actions runs it directly). After any source change, run `npm run build` and commit the updated `dist/` alongside your source changes.
 - To test locally: export `INPUT_OPENROUTER-API-KEY`, `INPUT_GITHUB-TOKEN`, `INPUT_SCANNER-MODELS`, `INPUT_JUDGE-MODEL`, `GITHUB_REPOSITORY`, and `PR_NUMBER` (or `GITHUB_REF_NAME`) as environment variables, then `npm run dev`.
 

@@ -604,6 +604,29 @@ describe('callOpenRouter', () => {
     });
 
     it('retries empty content with an unrecognized finish_reason (conservative)', async () => {
+      const unknownReasonBody = {
+        id: 'gen-unknown',
+        choices: [
+          {
+            message: { role: 'assistant', content: '' },
+            finish_reason: 'tool_calls',
+          },
+        ],
+        usage: { prompt_tokens: 10, completion_tokens: 0, total_tokens: 10 },
+      };
+      mockFetch
+        .mockResolvedValueOnce(mockResponse(unknownReasonBody))
+        .mockResolvedValueOnce(mockResponse(successBody));
+
+      const promise = callOpenRouter(defaultConfig, 'test-model', defaultMessages, 2000);
+      await vi.runAllTimersAsync();
+      const result = await promise;
+
+      expect(result.content).toBe('Looks good!');
+      expect(mockFetch).toHaveBeenCalledTimes(2);
+    });
+
+    it('fails fast on finish_reason content_filter — no adaptive retry (v0.5.1)', async () => {
       const contentFilterBody = {
         id: 'gen-filtered',
         choices: [
@@ -614,16 +637,41 @@ describe('callOpenRouter', () => {
         ],
         usage: { prompt_tokens: 10, completion_tokens: 0, total_tokens: 10 },
       };
-      mockFetch
-        .mockResolvedValueOnce(mockResponse(contentFilterBody))
-        .mockResolvedValueOnce(mockResponse(successBody));
+      mockFetch.mockResolvedValue(mockResponse(contentFilterBody));
 
       const promise = callOpenRouter(defaultConfig, 'test-model', defaultMessages, 2000);
+      const captured = promise.catch((e: unknown) => e);
       await vi.runAllTimersAsync();
-      const result = await promise;
+      const error = await captured;
 
-      expect(result.content).toBe('Looks good!');
-      expect(mockFetch).toHaveBeenCalledTimes(2);
+      expect(error).toBeInstanceOf(Error);
+      const message = (error as Error).message;
+      expect(message).toContain('content filter');
+      expect(message).toContain('finish_reason=content_filter');
+      expect(message).toContain('completion_tokens=0');
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+    });
+
+    it('fails fast on content_filter even when partial content is present', async () => {
+      const partialFilteredBody = {
+        id: 'gen-partial-filtered',
+        choices: [
+          {
+            message: { role: 'assistant', content: 'Partial revi' },
+            finish_reason: 'content_filter',
+          },
+        ],
+        usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+      };
+      mockFetch.mockResolvedValue(mockResponse(partialFilteredBody));
+
+      const promise = callOpenRouter(defaultConfig, 'test-model', defaultMessages, 2000);
+      const captured = promise.catch((e: unknown) => e);
+      await vi.runAllTimersAsync();
+      const error = await captured;
+
+      expect((error as Error).message).toContain('finish_reason=content_filter');
+      expect(mockFetch).toHaveBeenCalledTimes(1);
     });
 
     it('retries a missing message instead of dying on attempt 1', async () => {

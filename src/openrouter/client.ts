@@ -233,12 +233,15 @@ function sleep(ms: number): Promise<void> {
 /**
  * Interpret a 2xx OpenRouter response body.
  * - Non-empty extracted content → normal result (with 'length' warning)
+ * - finish_reason 'content_filter' → non-retryable failure regardless of
+ *   content: the provider blocked or censored the completion, so retrying
+ *   (or trusting partial output) cannot help
  * - Empty content + finish_reason 'stop' + no hidden reasoning →
  *   legitimate empty completion: result with content '' and emptyReason
  * - Everything else empty (finish_reason 'length', reasoning present,
- *   missing choice/message, or any other/undefined finish_reason such as
- *   content_filter — interpreted conservatively as a failure, since we
- *   cannot prove the model had nothing to say) → OpenRouterEmptyError
+ *   missing choice/message, or any other/undefined finish_reason —
+ *   interpreted conservatively as a failure, since we cannot prove the
+ *   model had nothing to say) → OpenRouterEmptyError
  */
 function interpretResponse(
   data: OpenRouterResponse,
@@ -253,6 +256,16 @@ function interpretResponse(
   const hasReasoning = reasoning !== undefined && reasoning.length > 0;
   const finishReason: string | undefined = choice?.finish_reason;
   const tokensUsed = data.usage?.total_tokens ?? 0;
+
+  // Fail fast on provider content filtering: a plain (non-retryable) error —
+  // adaptive retry cannot un-censor a completion, and partial filtered output
+  // is not trustworthy review content.
+  if (finishReason === 'content_filter') {
+    throw new Error(
+      `OpenRouter response blocked by provider content filter ` +
+        `(finish_reason=content_filter, completion_tokens=${data.usage?.completion_tokens ?? 'unknown'})`
+    );
+  }
 
   if (message === undefined || content === null || content === '') {
     if (message !== undefined && finishReason === 'stop' && !hasReasoning) {
