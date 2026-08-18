@@ -4,9 +4,12 @@ import {
   getInput,
   getRequiredInput,
   parsePositiveInt,
+  parseNonNegativeInt,
   parseListInput,
   parseScannerModels,
   parseScannerRoles,
+  parseScannerRole,
+  parseJudgeScanMode,
   parseExcludePaths,
   parseInputs,
 } from './config.js';
@@ -85,6 +88,72 @@ describe('parsePositiveInt', () => {
   ])('throws a clear error naming the input for %j', (raw) => {
     expect(() => parsePositiveInt('max-chars', raw)).toThrow(
       `Input 'max-chars' must be a positive integer, got '${raw}'`
+    );
+  });
+});
+
+describe('parseNonNegativeInt', () => {
+  it('parses a valid positive integer', () => {
+    expect(parseNonNegativeInt('min-successful-scanners', '3')).toBe(3);
+  });
+
+  it('accepts 0 (unlike parsePositiveInt)', () => {
+    expect(parseNonNegativeInt('min-successful-scanners', '0')).toBe(0);
+  });
+
+  it('accepts surrounding whitespace', () => {
+    expect(parseNonNegativeInt('min-successful-scanners', ' 2 ')).toBe(2);
+  });
+
+  it.each([
+    ['-1'],
+    ['abc'],
+    ['1.5'],
+    [''],
+    ['1e3'],
+  ])('throws a clear error naming the input for %j', (raw) => {
+    expect(() => parseNonNegativeInt('min-successful-scanners', raw)).toThrow(
+      `Input 'min-successful-scanners' must be a non-negative integer, got '${raw}'`
+    );
+  });
+});
+
+describe('parseScannerRole (single value)', () => {
+  it('parses each valid role', () => {
+    expect(parseScannerRole('judge-scan-role', 'security')).toBe('security');
+    expect(parseScannerRole('judge-scan-role', 'logic')).toBe('logic');
+    expect(parseScannerRole('judge-scan-role', 'performance')).toBe('performance');
+    expect(parseScannerRole('judge-scan-role', 'general')).toBe('general');
+  });
+
+  it('normalizes case and whitespace', () => {
+    expect(parseScannerRole('judge-scan-role', ' Security ')).toBe('security');
+    expect(parseScannerRole('judge-scan-role', 'GENERAL')).toBe('general');
+  });
+
+  it('throws a clear error naming the input and listing valid values', () => {
+    expect(() => parseScannerRole('judge-scan-role', 'speling')).toThrow(
+      "Input 'judge-scan-role' has invalid value 'speling'. " +
+        'Valid values: security, logic, performance, general.'
+    );
+  });
+});
+
+describe('parseJudgeScanMode', () => {
+  it.each([['always'], ['fallback'], ['off']])('parses %j', (raw) => {
+    expect(parseJudgeScanMode(raw)).toBe(raw);
+  });
+
+  it('normalizes case and whitespace', () => {
+    expect(parseJudgeScanMode('Always')).toBe('always');
+    expect(parseJudgeScanMode(' FALLBACK ')).toBe('fallback');
+    expect(parseJudgeScanMode('Off')).toBe('off');
+  });
+
+  it('throws a clear error listing the valid values', () => {
+    expect(() => parseJudgeScanMode('sometimes')).toThrow(
+      "Input 'judge-scan' has invalid value 'sometimes'. " +
+        'Valid values: always, fallback, off.'
     );
   });
 });
@@ -261,7 +330,12 @@ describe('parseInputs', () => {
       baseUrl: 'https://openrouter.ai/api/v1',
       scannerModels: ['openai/gpt-4o', 'anthropic/claude-3.5-sonnet'],
       scannerRoles: ['general', 'general'],
+      rescueModels: [],
       judgeModel: 'openai/gpt-4o',
+      judgeScan: 'always',
+      judgeScanRole: 'general',
+      judgeScanModel: 'openai/gpt-4o',
+      minSuccessfulScanners: 1,
       language: 'tr',
       autoSelectModels: false,
       maxFiles: 10,
@@ -290,6 +364,11 @@ describe('parseInputs', () => {
       'INPUT_COMMENT-MARKER': 'My_Marker-01',
       'INPUT_REVIEW-MODE': 'inline',
       'INPUT_EXCLUDE-PATHS': '**/*.lock,generated/**',
+      'INPUT_RESCUE-MODELS': 'r/one,r/two',
+      'INPUT_JUDGE-SCAN': 'fallback',
+      'INPUT_JUDGE-SCAN-ROLE': 'security',
+      'INPUT_JUDGE-SCAN-MODEL': 'd/scan',
+      'INPUT_MIN-SUCCESSFUL-SCANNERS': '2',
     });
 
     expect(parseInputs(env)).toEqual({
@@ -298,7 +377,12 @@ describe('parseInputs', () => {
       baseUrl: 'https://proxy.example.com/v1',
       scannerModels: ['a/one', 'b/two'],
       scannerRoles: ['security', 'logic'],
+      rescueModels: ['r/one', 'r/two'],
       judgeModel: 'c/judge',
+      judgeScan: 'fallback',
+      judgeScanRole: 'security',
+      judgeScanModel: 'd/scan',
+      minSuccessfulScanners: 2,
       language: 'en',
       autoSelectModels: false,
       maxFiles: 25,
@@ -397,6 +481,139 @@ describe('parseInputs', () => {
     expect(() =>
       parseInputs(baseEnv({ 'INPUT_COMMENT-MARKER': 'has space' }))
     ).toThrow(/comment-marker/);
+  });
+
+  describe('rescue-models', () => {
+    it('defaults to an empty list', () => {
+      expect(parseInputs(baseEnv()).rescueModels).toEqual([]);
+    });
+
+    it('parses CSV input', () => {
+      expect(
+        parseInputs(baseEnv({ 'INPUT_RESCUE-MODELS': 'a/one, b/two ,' })).rescueModels
+      ).toEqual(['a/one', 'b/two']);
+    });
+
+    it('parses multiline input', () => {
+      expect(
+        parseInputs(baseEnv({ 'INPUT_RESCUE-MODELS': 'a/one\nb/two\n\n' })).rescueModels
+      ).toEqual(['a/one', 'b/two']);
+    });
+
+    it('parses a JSON array', () => {
+      expect(
+        parseInputs(baseEnv({ 'INPUT_RESCUE-MODELS': '["a/one", "b/two"]' })).rescueModels
+      ).toEqual(['a/one', 'b/two']);
+    });
+
+    it('throws on near-JSON input, naming the input', () => {
+      expect(() =>
+        parseInputs(baseEnv({ 'INPUT_RESCUE-MODELS': '[a/one, b/two]' }))
+      ).toThrow(/Input 'rescue-models' looks like a JSON array but failed to parse/);
+    });
+  });
+
+  describe('judge-scan', () => {
+    it("defaults to 'always'", () => {
+      expect(parseInputs(baseEnv()).judgeScan).toBe('always');
+    });
+
+    it.each([
+      ['always', 'always'],
+      ['fallback', 'fallback'],
+      ['off', 'off'],
+      ['Always', 'always'],
+      ['FALLBACK', 'fallback'],
+      ['Off', 'off'],
+    ])('accepts %j as %j (case-insensitive)', (raw, expected) => {
+      expect(parseInputs(baseEnv({ 'INPUT_JUDGE-SCAN': raw })).judgeScan).toBe(
+        expected
+      );
+    });
+
+    it('rejects an invalid value with an error listing the valid ones', () => {
+      expect(() => parseInputs(baseEnv({ 'INPUT_JUDGE-SCAN': 'never' }))).toThrow(
+        "Input 'judge-scan' has invalid value 'never'. " +
+          'Valid values: always, fallback, off.'
+      );
+    });
+  });
+
+  describe('judge-scan-role', () => {
+    it("defaults to 'general'", () => {
+      expect(parseInputs(baseEnv()).judgeScanRole).toBe('general');
+    });
+
+    it('accepts a valid role case-insensitively', () => {
+      expect(
+        parseInputs(baseEnv({ 'INPUT_JUDGE-SCAN-ROLE': 'Security' })).judgeScanRole
+      ).toBe('security');
+      expect(
+        parseInputs(baseEnv({ 'INPUT_JUDGE-SCAN-ROLE': 'performance' })).judgeScanRole
+      ).toBe('performance');
+    });
+
+    it('rejects an invalid role with an error listing the valid ones', () => {
+      expect(() =>
+        parseInputs(baseEnv({ 'INPUT_JUDGE-SCAN-ROLE': 'styling' }))
+      ).toThrow(
+        "Input 'judge-scan-role' has invalid value 'styling'. " +
+          'Valid values: security, logic, performance, general.'
+      );
+    });
+  });
+
+  describe('judge-scan-model', () => {
+    it('defaults to the parsed judge-model value', () => {
+      const inputs = parseInputs(baseEnv({ 'INPUT_JUDGE-MODEL': 'c/judge' }));
+      expect(inputs.judgeScanModel).toBe('c/judge');
+      expect(inputs.judgeScanModel).toBe(inputs.judgeModel);
+    });
+
+    it('defaults to judge-model when passed as an empty string', () => {
+      expect(
+        parseInputs(baseEnv({ 'INPUT_JUDGE-SCAN-MODEL': '' })).judgeScanModel
+      ).toBe('openai/gpt-4o');
+    });
+
+    it('uses an explicit override over judge-model', () => {
+      const inputs = parseInputs(
+        baseEnv({ 'INPUT_JUDGE-MODEL': 'c/judge', 'INPUT_JUDGE-SCAN-MODEL': 'd/scan' })
+      );
+      expect(inputs.judgeScanModel).toBe('d/scan');
+      expect(inputs.judgeModel).toBe('c/judge');
+    });
+  });
+
+  describe('min-successful-scanners', () => {
+    it('defaults to 1', () => {
+      expect(parseInputs(baseEnv()).minSuccessfulScanners).toBe(1);
+    });
+
+    it('accepts 0 (disables the check)', () => {
+      expect(
+        parseInputs(baseEnv({ 'INPUT_MIN-SUCCESSFUL-SCANNERS': '0' }))
+          .minSuccessfulScanners
+      ).toBe(0);
+    });
+
+    it('accepts a positive value', () => {
+      expect(
+        parseInputs(baseEnv({ 'INPUT_MIN-SUCCESSFUL-SCANNERS': '3' }))
+          .minSuccessfulScanners
+      ).toBe(3);
+    });
+
+    it.each([['-1'], ['abc'], ['1.5']])(
+      'rejects %j with a clear error naming the input',
+      (raw) => {
+        expect(() =>
+          parseInputs(baseEnv({ 'INPUT_MIN-SUCCESSFUL-SCANNERS': raw }))
+        ).toThrow(
+          `Input 'min-successful-scanners' must be a non-negative integer, got '${raw}'`
+        );
+      }
+    );
   });
 
   it.each([

@@ -193,6 +193,11 @@ scanner-roles: security
 | `scanner-models` | Yes | - | List of scanner models (CSV, multiline, or JSON) |
 | `scanner-roles` | No | smart default (see [Scanner Roles](#scanner-roles)) | Role per scanner: `security`, `logic`, `performance`, `general`. Single value broadcasts; a list must match `scanner-models` length |
 | `judge-model` | Yes | - | Model for aggregation/judging |
+| `rescue-models` | No | (fastest successful model reused) | Models for the automatic rescue pass when a role has zero successful scanners |
+| `judge-scan` | No | `always` | Judge model also runs its own scan: `always`, `fallback` (only on degraded coverage), or `off` |
+| `judge-scan-role` | No | `general` | Scanner role used for the judge scan |
+| `judge-scan-model` | No | judge-model | Model for the judge scan — lets scan and aggregation be split across two strong models |
+| `min-successful-scanners` | No | `1` | Minimum successful scanner-pool entries (incl. rescues + judge scan) or the action fails; `0` disables |
 | `language` | No | `tr` | Output language (tr, en, etc.) |
 | `base-url` | No | `https://openrouter.ai/api/v1` | OpenRouter API base URL |
 | `max-files` | No | `10` | Maximum files to review |
@@ -262,7 +267,7 @@ Per [GitHub's security hardening guide](https://docs.github.com/en/actions/secur
       - uses: cumartesiolsun/enterprise-grade-ai-reviewer@<full-commit-sha>  # e.g. @b3ec50e...
 ```
 
-Using `@latest` is the convenient alternative, but note that `latest` is a **force-moved tag**: it is updated to point at every new release, so you are trusting future releases of this action sight unseen. Fixed version tags (`@v0.3.0`) sit in between — they are never moved by policy, but tags are not cryptographically immutable the way a SHA is.
+Using `@latest` is the convenient alternative, but note that `latest` is a **force-moved tag**: it is updated to point at every new release, so you are trusting future releases of this action sight unseen. The floating major tag `@v0` (GitHub Actions convention, moved automatically on every release) behaves the same way. Fixed version tags (`@v0.5.0`) sit in between — they are never moved by policy, but tags are not cryptographically immutable the way a SHA is.
 
 ### Avoid paying for superseded runs
 
@@ -327,11 +332,27 @@ PR comments show the status of each scanner model:
 
 This helps identify which models are working and which are having issues.
 
+## Reliability & Coverage (v0.5)
+
+Three layers guarantee that a review actually happened — and tell you when it partially didn't:
+
+**Recall / precision split.** Cheap parallel scanners maximize *recall* (each hunting its own role), the judge model runs its own independent deep scan (`judge-scan`, on by default — rendered in Sources as `judge-scan:<model>`), and the aggregation judge maximizes *precision*: it verifies every finding against the diff and **never adds findings of its own**. The judge's own scan is deliberately a separate API call whose output enters the scanner pool — a model cannot be an honest referee of findings planted in its own aggregation prompt.
+
+**Empty responses and truncation are failures, not "no findings".** Some models (especially reasoning models) burn the whole token budget on hidden reasoning and return an empty completion. An empty response with `finish_reason: length` (or with reasoning present) is automatically retried with a doubled token budget (capped at 16000) and the OpenRouter `reasoning: { exclude: true, effort: 'low' }` parameter; if it still fails, the scanner is reported FAILED with a diagnostic message — never silently SKIPPED. Only an exact `NO_FINDINGS`, or an intentionally empty completion (`finish_reason: stop`), counts as SKIPPED.
+
+**Automatic role rescue.** If every scanner of a role fails, that role gets one rescue call — using the first unused model from the optional `rescue-models` input, or (with zero configuration) the fastest model that succeeded this run. You can change your model list freely; nothing depends on manual ordering. The Sources section shows rescues as `` `model` (logic, rescue): ✅ OK `` and a per-role summary line:
+
+```
+Coverage: security ✅ · logic 🔁 rescued · performance ❌ uncovered
+```
+
+If a role needed rescue, stayed uncovered, or a fallback judge scan had to run, the review comment is prefixed with `> ⚠️ Degraded scanner coverage this run — see Sources.` Finally, `min-successful-scanners` (default 1, counting rescues and the judge scan) fails the action outright when unmet.
+
 ## Retry Policy
 
 API calls follow this retry policy:
-- **Retry**: 429 (rate limit), 5xx (server errors), network/timeout errors
-- **No Retry**: 400 (bad request) — fails immediately
+- **Retry**: 429 (rate limit), 5xx (server errors), network/timeout errors, empty/truncated responses (with adaptive token budget, see above)
+- **No Retry**: 400 (bad request) — fails immediately (except a 400 rejecting the retry-only `reasoning` parameter, which is retried once without it)
 - **Backoff**: Exponential (1s, 2s, 4s)
 - **Max Retries**: 3
 
@@ -340,7 +361,7 @@ API calls follow this retry policy:
 - **Scanner failures are tolerated**: a failed scanner is reported as `❌ FAILED` in the Sources section and the remaining scanners' output is still aggregated.
 - **Judge failure fails the action run**: if the judge model fails after retries, the action exits with a non-zero status and the check turns red. (Previous versions posted the error text as the review and stayed green — that silent-failure behavior has been removed.)
 
-## Limitations (v0.4)
+## Limitations (v0.5)
 
 - `auto-select-models` is not implemented (placeholder for future versions)
 - No caching of results across runs
@@ -368,6 +389,13 @@ src/
 ```
 
 ## Roadmap
+
+### Shipped in v0.5
+- ✅ Empty/truncated-response recovery: adaptive retry with doubled token budget + reasoning exclusion; truncation is never reported as "no findings"
+- ✅ Automatic role rescue pass (`rescue-models` input, zero-config fallback to the fastest successful model)
+- ✅ Always-on judge scan (`judge-scan` / `judge-scan-role` / `judge-scan-model` inputs) — the strongest model scans too, isolated from aggregation
+- ✅ Coverage transparency: per-role Coverage line, degraded-coverage warning, `min-successful-scanners` gate
+- ✅ Floating major tag `v0` (moved automatically on release) for convention-style pinning
 
 ### Shipped in v0.4
 - ✅ Role-specialized scanners (`security` / `logic` / `performance` / `general`) with the `scanner-roles` input

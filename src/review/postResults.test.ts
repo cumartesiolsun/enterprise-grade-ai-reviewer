@@ -1,8 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { GitHubConfig, TruncationInfo } from '../github/diff.js';
-import type { ScannerResult } from './scanner.js';
+import type { ScannerResult, RoleCoverage } from './scanner.js';
 import type { InlineFinding } from './judge.js';
-import type { PostResultsInput, PostResultsJudge, PostResultsDiff } from './postResults.js';
+import type {
+  PostResultsInput,
+  PostResultsJudge,
+  PostResultsDiff,
+  PostResultsExtras,
+} from './postResults.js';
 
 vi.mock('../github/comments.js', () => ({
   postOrUpdateComment: vi.fn(),
@@ -159,5 +164,117 @@ describe('postResults', () => {
     const callData = mockedPostOrUpdate.mock.calls[0]![1]!;
     expect(callData.scannerResults).toHaveLength(2);
     expect(callData.truncation).toBe(truncation);
+  });
+});
+
+describe('postResults — coverage/degraded extras', () => {
+  const coverage: RoleCoverage[] = [
+    { role: 'security', status: 'covered' },
+    { role: 'logic', status: 'rescued' },
+    { role: 'performance', status: 'uncovered' },
+  ];
+  const extras: PostResultsExtras = { coverage, degraded: true };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('threads extras into postInlineReview in inline mode with findings', async () => {
+    const inputs: PostResultsInput = { reviewMode: 'inline', commentMarker: 'TEST_MARKER' };
+    const findings: InlineFinding[] = [
+      { file: 'src/app.ts', line: 5, severity: 'critical', title: 'Bug', body: 'Fix it' },
+    ];
+    const judge: PostResultsJudge = { output: 'raw output', findings };
+    const diff = makeDiff();
+    const scanners = [makeScanner()];
+
+    await postResults(inputs, makeGitHubConfig(), judge, diff, scanners, extras);
+
+    expect(mockedPostInline).toHaveBeenCalledOnce();
+    expect(mockedPostInline).toHaveBeenCalledWith(
+      expect.objectContaining({ owner: 'test-owner' }),
+      findings,
+      diff.files,
+      'abc123',
+      scanners,
+      diff.truncation,
+      'TEST_MARKER',
+      extras
+    );
+  });
+
+  it('does not append an extras argument when none is given (inline mode)', async () => {
+    const inputs: PostResultsInput = { reviewMode: 'inline', commentMarker: 'TEST_MARKER' };
+    const findings: InlineFinding[] = [
+      { file: 'src/app.ts', line: 5, severity: 'critical', title: 'Bug', body: 'Fix it' },
+    ];
+    const judge: PostResultsJudge = { output: 'raw output', findings };
+
+    await postResults(inputs, makeGitHubConfig(), judge, makeDiff(), [makeScanner()]);
+
+    expect(mockedPostInline.mock.calls[0]).toHaveLength(7);
+  });
+
+  it('threads extras into the LGTM comment in inline mode with empty findings', async () => {
+    const inputs: PostResultsInput = { reviewMode: 'inline', commentMarker: 'TEST_MARKER' };
+    const judge: PostResultsJudge = { output: '[]', findings: [] };
+
+    await postResults(inputs, makeGitHubConfig(), judge, makeDiff(), [makeScanner()], extras);
+
+    expect(mockedPostInline).not.toHaveBeenCalled();
+    expect(mockedPostOrUpdate).toHaveBeenCalledOnce();
+    expect(mockedPostOrUpdate).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ coverage, degraded: true }),
+      'TEST_MARKER'
+    );
+  });
+
+  it('threads extras into the summary fallback when findings failed to parse', async () => {
+    const inputs: PostResultsInput = { reviewMode: 'inline', commentMarker: 'TEST_MARKER' };
+    const judge: PostResultsJudge = { output: 'Raw judge text', findings: undefined };
+
+    await postResults(inputs, makeGitHubConfig(), judge, makeDiff(), [makeScanner()], extras);
+
+    expect(mockedPostInline).not.toHaveBeenCalled();
+    expect(mockedPostOrUpdate).toHaveBeenCalledOnce();
+    expect(mockedPostOrUpdate).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        judgeOutput: 'Raw judge text',
+        coverage,
+        degraded: true,
+      }),
+      'TEST_MARKER'
+    );
+  });
+
+  it('threads extras into postOrUpdateComment in summary mode', async () => {
+    const inputs: PostResultsInput = { reviewMode: 'summary', commentMarker: 'MARKER' };
+    const judge: PostResultsJudge = { output: 'Summary review text' };
+
+    await postResults(inputs, makeGitHubConfig(), judge, makeDiff(), [makeScanner()], extras);
+
+    expect(mockedPostOrUpdate).toHaveBeenCalledOnce();
+    expect(mockedPostOrUpdate).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        judgeOutput: 'Summary review text',
+        coverage,
+        degraded: true,
+      }),
+      'MARKER'
+    );
+  });
+
+  it('leaves coverage and degraded undefined in summary mode without extras', async () => {
+    const inputs: PostResultsInput = { reviewMode: 'summary', commentMarker: 'MARKER' };
+    const judge: PostResultsJudge = { output: 'Summary review text' };
+
+    await postResults(inputs, makeGitHubConfig(), judge, makeDiff(), [makeScanner()]);
+
+    const callData = mockedPostOrUpdate.mock.calls[0]![1]!;
+    expect(callData.coverage).toBeUndefined();
+    expect(callData.degraded).toBeUndefined();
   });
 });

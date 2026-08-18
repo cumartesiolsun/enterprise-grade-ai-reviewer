@@ -6,7 +6,7 @@ import type { Octokit } from '@octokit/rest';
 import { createGitHubClient } from './client.js';
 import type { GitHubConfig, TruncationInfo, FileDiff } from './diff.js';
 import { parseDiffHunks, isLineInDiff } from './diff.js';
-import type { ScannerResult } from '../review/scanner.js';
+import type { ScannerResult, RoleCoverage } from '../review/scanner.js';
 import type { InlineFinding } from '../review/judge.js';
 import { logger } from '../utils/logger.js';
 
@@ -14,7 +14,20 @@ export interface ReviewCommentData {
   judgeOutput: string;
   scannerResults: ScannerResult[];
   truncation: TruncationInfo;
+  /** Per-role coverage summary rendered at the end of the Sources section. */
+  coverage?: RoleCoverage[] | undefined;
+  /** When true, a degraded-coverage warning is rendered near the top. */
+  degraded?: boolean | undefined;
 }
+
+/** Coverage/degraded extras threaded through the inline-review path. */
+export interface ReviewExtras {
+  coverage?: RoleCoverage[] | undefined;
+  degraded?: boolean | undefined;
+}
+
+/** Exact warning line rendered when a run had degraded scanner coverage. */
+const DEGRADED_WARNING = '> ⚠️ Degraded scanner coverage this run — see Sources.';
 
 // Max lengths for sanitized model-generated text
 const MAX_JUDGE_OUTPUT_LENGTH = 60000;
@@ -77,6 +90,28 @@ function getStatusBadge(result: ScannerResult): string {
 }
 
 /**
+ * Format the parenthesized role tag for a scanner Sources line.
+ * Rescue-origin results are tagged "(role, rescue)"; judge-scan results need
+ * no special casing (their model name already arrives prefixed "judge-scan:").
+ */
+function formatRoleTag(result: ScannerResult): string {
+  return result.origin === 'rescue' ? `(${result.role}, rescue)` : `(${result.role})`;
+}
+
+/**
+ * Format the per-role coverage line, e.g.:
+ * "Coverage: security ✅ · logic 🔁 rescued · performance ❌ uncovered"
+ */
+function formatCoverageLine(coverage: RoleCoverage[]): string {
+  const entries = coverage.map((entry) => {
+    if (entry.status === 'covered') return `${entry.role} ✅`;
+    if (entry.status === 'rescued') return `${entry.role} 🔁 rescued`;
+    return `${entry.role} ❌ uncovered`;
+  });
+  return `Coverage: ${entries.join(' · ')}`;
+}
+
+/**
  * Parse "(by: model-a, model-b)" tags from free-form judge output
  * and count how many findings each model contributed to.
  */
@@ -113,19 +148,30 @@ export function buildCommentBody(
     '',
     `<!-- ${commentMarker} -->`,
     '',
+  ];
+
+  if (data.degraded) {
+    sections.push(DEGRADED_WARNING, '');
+  }
+
+  sections.push(
     '### Final Review',
     '',
     judgeOutput,
     '',
     '### Sources',
-    '',
-  ];
+    ''
+  );
 
   // Add scanner results with status badges and contribution counts
   for (const result of data.scannerResults) {
     const count = contributions.get(result.model);
     const contrib = count ? ` — contributed to ${count} finding(s)` : '';
-    sections.push(`- \`${result.model}\` (${result.role}): ${getStatusBadge(result)}${contrib}`);
+    sections.push(`- \`${result.model}\` ${formatRoleTag(result)}: ${getStatusBadge(result)}${contrib}`);
+  }
+
+  if (data.coverage && data.coverage.length > 0) {
+    sections.push('', formatCoverageLine(data.coverage));
   }
   sections.push('');
 
@@ -330,7 +376,8 @@ function buildInlineReviewBody(
   matched: InlineFinding[],
   unmatched: InlineFinding[],
   scannerResults: ScannerResult[],
-  truncation: TruncationInfo
+  truncation: TruncationInfo,
+  extras?: ReviewExtras
 ): string {
   const allFindings = [...matched, ...unmatched];
   const contributions = countContributions(allFindings);
@@ -338,19 +385,30 @@ function buildInlineReviewBody(
   const bodyLines: string[] = [
     '## Enterprise AI Review',
     '',
+  ];
+
+  if (extras?.degraded) {
+    bodyLines.push(DEGRADED_WARNING, '');
+  }
+
+  bodyLines.push(
     `Found **${allFindings.length}** finding(s): ` +
       `${allFindings.filter((f) => f.severity === 'critical').length} critical, ` +
       `${allFindings.filter((f) => f.severity === 'warning').length} warning, ` +
       `${allFindings.filter((f) => f.severity === 'info').length} info`,
     '',
     '### Sources',
-    '',
-  ];
+    ''
+  );
 
   for (const result of scannerResults) {
     const count = contributions.get(result.model);
     const contrib = count ? ` — contributed to ${count} finding(s)` : '';
-    bodyLines.push(`- \`${result.model}\` (${result.role}): ${getStatusBadge(result)}${contrib}`);
+    bodyLines.push(`- \`${result.model}\` ${formatRoleTag(result)}: ${getStatusBadge(result)}${contrib}`);
+  }
+
+  if (extras?.coverage && extras.coverage.length > 0) {
+    bodyLines.push('', formatCoverageLine(extras.coverage));
   }
   bodyLines.push('');
 
@@ -447,7 +505,8 @@ export async function postInlineReview(
   headSha: string,
   scannerResults: ScannerResult[],
   truncation: TruncationInfo,
-  commentMarker: string
+  commentMarker: string,
+  extras?: ReviewExtras
 ): Promise<void> {
   const octokit = createGitHubClient(config.token);
   const { matched, unmatched } = validateFindings(findings, files);
@@ -477,7 +536,7 @@ export async function postInlineReview(
       body: formatInlineComment(f),
     }));
 
-    const reviewBody = buildInlineReviewBody(newMatched, unmatched, scannerResults, truncation);
+    const reviewBody = buildInlineReviewBody(newMatched, unmatched, scannerResults, truncation, extras);
 
     logger.info('Posting inline review', { commentsCount: reviewComments.length, headSha });
 
@@ -506,7 +565,13 @@ export async function postInlineReview(
 
       await postOrUpdateComment(
         config,
-        { judgeOutput, scannerResults, truncation },
+        {
+          judgeOutput,
+          scannerResults,
+          truncation,
+          coverage: extras?.coverage,
+          degraded: extras?.degraded,
+        },
         commentMarker
       );
     }
@@ -522,7 +587,13 @@ export async function postInlineReview(
 
   await postOrUpdateComment(
     config,
-    { judgeOutput, scannerResults, truncation },
+    {
+      judgeOutput,
+      scannerResults,
+      truncation,
+      coverage: extras?.coverage,
+      degraded: extras?.degraded,
+    },
     commentMarker
   );
 }

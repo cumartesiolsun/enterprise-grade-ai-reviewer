@@ -9,6 +9,21 @@ import type { ReviewMode } from './review/judge.js';
 import type { ScannerRole } from './review/prompts.js';
 
 /**
+ * When the judge model also runs a scan of its own.
+ * - 'always': one extra scan on every run, in parallel with regular scanners
+ * - 'fallback': only when a role is still uncovered after rescue or no scanner succeeded
+ * - 'off': never
+ */
+export type JudgeScanMode = 'always' | 'fallback' | 'off';
+
+/** Valid values for the judge-scan input. */
+export const VALID_JUDGE_SCAN_MODES: readonly JudgeScanMode[] = [
+  'always',
+  'fallback',
+  'off',
+];
+
+/**
  * Action inputs from environment
  */
 export interface ActionInputs {
@@ -18,7 +33,17 @@ export interface ActionInputs {
   scannerModels: string[];
   /** Resolved scanner roles, index-aligned with scannerModels. */
   scannerRoles: ScannerRole[];
+  /** Models for the automatic rescue pass; empty means "reuse the fastest successful model". */
+  rescueModels: string[];
   judgeModel: string;
+  /** When the judge model also runs a scan of its own. */
+  judgeScan: JudgeScanMode;
+  /** Scanner role used for the judge scan. */
+  judgeScanRole: ScannerRole;
+  /** Model used for the judge scan; already resolved (defaults to judgeModel). */
+  judgeScanModel: string;
+  /** Minimum successful scanner-pool entries required; 0 disables the check. */
+  minSuccessfulScanners: number;
   language: string;
   autoSelectModels: boolean;
   maxFiles: number;
@@ -103,6 +128,24 @@ export function parsePositiveInt(name: string, raw: string): number {
 }
 
 /**
+ * Parse a non-negative integer input value.
+ * Same as parsePositiveInt but 0 is allowed (used by inputs where 0 means
+ * "disabled", e.g. min-successful-scanners).
+ */
+export function parseNonNegativeInt(name: string, raw: string): number {
+  const trimmed = raw.trim();
+  const value = Number(trimmed);
+
+  if (!/^\d+$/.test(trimmed) || !Number.isSafeInteger(value) || value < 0) {
+    throw new Error(
+      `Input '${name}' must be a non-negative integer, got '${raw}'`
+    );
+  }
+
+  return value;
+}
+
+/**
  * Parse a list-style input (supports JSON array, multiline, or CSV).
  *
  * If the value looks like a JSON array (starts with '[') but fails to parse,
@@ -169,6 +212,37 @@ export const VALID_SCANNER_ROLES: readonly ScannerRole[] = [
 
 function isScannerRole(value: string): value is ScannerRole {
   return (VALID_SCANNER_ROLES as readonly string[]).includes(value);
+}
+
+/**
+ * Parse a single scanner-role value (case-insensitive).
+ * Used by inputs that take exactly one role (e.g. judge-scan-role).
+ * Throws a clear error naming the input and listing the valid values.
+ */
+export function parseScannerRole(name: string, raw: string): ScannerRole {
+  const normalized = raw.trim().toLowerCase();
+  if (!isScannerRole(normalized)) {
+    throw new Error(
+      `Input '${name}' has invalid value '${raw}'. ` +
+        `Valid values: ${VALID_SCANNER_ROLES.join(', ')}.`
+    );
+  }
+  return normalized;
+}
+
+/**
+ * Parse the judge-scan input (case-insensitive).
+ * Throws a clear error listing the valid values on anything else.
+ */
+export function parseJudgeScanMode(raw: string): JudgeScanMode {
+  const normalized = raw.trim().toLowerCase();
+  if (!(VALID_JUDGE_SCAN_MODES as readonly string[]).includes(normalized)) {
+    throw new Error(
+      `Input 'judge-scan' has invalid value '${raw}'. ` +
+        `Valid values: ${VALID_JUDGE_SCAN_MODES.join(', ')}.`
+    );
+  }
+  return normalized as JudgeScanMode;
 }
 
 /**
@@ -281,6 +355,27 @@ export function parseInputs(env: Record<string, string | undefined>): ActionInpu
     scannerModels.length
   );
 
+  // Rescue models (optional; empty list means "reuse the fastest successful model")
+  const rescueModels = parseListInput(
+    'rescue-models',
+    getInput(env, 'rescue-models', '')
+  );
+
+  // Judge scan configuration. judge-scan-model resolves to the judge model
+  // here so downstream code never needs its own fallback logic.
+  const judgeScan = parseJudgeScanMode(getInput(env, 'judge-scan', 'always'));
+  const judgeScanRole = parseScannerRole(
+    'judge-scan-role',
+    getInput(env, 'judge-scan-role', 'general')
+  );
+  const judgeScanModel = getInput(env, 'judge-scan-model', judgeModel);
+
+  // Minimum successful scanner-pool entries (0 disables the check)
+  const minSuccessfulScanners = parseNonNegativeInt(
+    'min-successful-scanners',
+    getInput(env, 'min-successful-scanners', '1')
+  );
+
   // Parse and validate review mode
   const reviewModeRaw = getInput(env, 'review-mode', 'summary').toLowerCase();
   if (reviewModeRaw !== 'summary' && reviewModeRaw !== 'inline') {
@@ -306,7 +401,12 @@ export function parseInputs(env: Record<string, string | undefined>): ActionInpu
     baseUrl: getInput(env, 'base-url', 'https://openrouter.ai/api/v1'),
     scannerModels,
     scannerRoles,
+    rescueModels,
     judgeModel,
+    judgeScan,
+    judgeScanRole,
+    judgeScanModel,
+    minSuccessfulScanners,
     language: getInput(env, 'language', 'tr'),
     autoSelectModels,
     maxFiles: parsePositiveInt('max-files', getInput(env, 'max-files', '10')),

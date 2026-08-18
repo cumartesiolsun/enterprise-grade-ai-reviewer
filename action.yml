@@ -79,6 +79,44 @@ inputs:
       Set to the literal value "none" (case-insensitive) to disable all exclusions.
     required: false
     default: ''
+  rescue-models:
+    description: >-
+      Models used for the automatic rescue pass when a role ends up with zero
+      successful scanners (same formats as scanner-models: CSV, multiline, or
+      JSON array). When empty, the fastest successful model of the run is
+      reused — rescue works with zero configuration.
+    required: false
+    default: ''
+  judge-scan:
+    description: >-
+      When the judge model also runs a scan of its own. "always" (default)
+      runs one extra scan with the judge/judge-scan model on every run, in
+      parallel with the regular scanners. "fallback" runs it only when a role
+      is still uncovered after the rescue pass or when no scanner succeeded at
+      all. "off" never runs it. Findings from this scan are rendered with the
+      source judge-scan:<model>.
+    required: false
+    default: 'always'
+  judge-scan-role:
+    description: >-
+      Scanner role used for the judge scan. Valid values: security, logic,
+      performance, general.
+    required: false
+    default: 'general'
+  judge-scan-model:
+    description: >-
+      Model used for the judge scan. Defaults to judge-model when empty —
+      setting it lets scanning and aggregation be split across two strong
+      models.
+    required: false
+    default: ''
+  min-successful-scanners:
+    description: >-
+      Minimum number of successful scanner-pool entries (regular scanners +
+      rescue pass + judge scan) required for the review to proceed; the action
+      fails when fewer succeed. Set to 0 to disable the check.
+    required: false
+    default: '1'
 
 outputs:
   total-tokens:

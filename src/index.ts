@@ -7,7 +7,7 @@ import { parseInputs, getInput } from './config.js';
 import { normalizeDiff, getConfigFromEnv, getPRContextFromEnv } from './github/diff.js';
 import type { GitHubConfig, NormalizedDiff, TruncationInfo } from './github/diff.js';
 import { postOrUpdateComment } from './github/comments.js';
-import { runScanners } from './review/scanner.js';
+import { runScanners, runJudgeScan } from './review/scanner.js';
 import type { ScannerConfig, ScannerResult } from './review/scanner.js';
 import { runJudge } from './review/judge.js';
 import type { JudgeConfig } from './review/judge.js';
@@ -178,7 +178,8 @@ async function run(): Promise<void> {
       return;
     }
 
-    // Step 2: Run scanners in parallel
+    // Step 2: Run scanners in parallel (rescue pass included), plus the
+    // optional judge scan.
     const scannerConfig: ScannerConfig = {
       openrouter: openrouterConfig,
       models: inputs.scannerModels,
@@ -186,9 +187,53 @@ async function run(): Promise<void> {
       language: inputs.language,
       roles: inputs.scannerRoles,
       prContext,
+      rescueModels: inputs.rescueModels,
     };
 
-    scannerResults = await runScanners(scannerConfig, diff.combinedDiff);
+    // Judge-scan isolation: the aggregation judge must stay a pure verifier —
+    // a model cannot be an honest referee of its own in-prompt findings — so
+    // the judge model's own scan is a separate call whose result enters the
+    // scanner-results pool like any other scanner source (see runJudgeScan).
+    const judgeScanPromise =
+      inputs.judgeScan === 'always'
+        ? runJudgeScan(
+            scannerConfig,
+            diff.combinedDiff,
+            inputs.judgeScanModel,
+            inputs.judgeScanRole
+          )
+        : undefined;
+
+    const scanOutcome = await runScanners(scannerConfig, diff.combinedDiff);
+    const coverage = scanOutcome.coverage;
+    scannerResults = scanOutcome.results;
+
+    let fallbackJudgeScanRan = false;
+    let judgeScanResult = judgeScanPromise ? await judgeScanPromise : undefined;
+
+    if (!judgeScanResult && inputs.judgeScan === 'fallback') {
+      const anyUncovered = coverage.some((c) => c.status === 'uncovered');
+      const zeroSuccessful = !scannerResults.some((r) => r.success);
+      if (anyUncovered || zeroSuccessful) {
+        logger.warn('Running fallback judge scan', { anyUncovered, zeroSuccessful });
+        judgeScanResult = await runJudgeScan(
+          scannerConfig,
+          diff.combinedDiff,
+          inputs.judgeScanModel,
+          'general'
+        );
+        fallbackJudgeScanRan = true;
+      }
+    }
+
+    if (judgeScanResult) {
+      scannerResults = [...scannerResults, judgeScanResult];
+    }
+
+    // An always-mode judge scan is normal operation; degradation means a role
+    // needed rescue, stayed uncovered, or a fallback judge scan had to run.
+    const degraded =
+      fallbackJudgeScanRan || coverage.some((c) => c.status !== 'covered');
 
     const successfulScanners = scannerResults.filter((r) => r.success);
     const failedScanners = scannerResults.filter((r) => !r.success);
@@ -196,17 +241,29 @@ async function run(): Promise<void> {
     logger.info('Scanners completed', {
       successful: successfulScanners.length,
       failed: failedScanners.length,
+      coverage,
+      judgeScan: inputs.judgeScan,
+      fallbackJudgeScanRan,
     });
 
-    if (successfulScanners.length === 0) {
-      logger.error('All scanners failed');
+    // Minimum-success gate: the pool (regular + rescue + judge scan) must
+    // contain at least min-successful-scanners successful entries; 0 disables.
+    if (
+      inputs.minSuccessfulScanners > 0 &&
+      successfulScanners.length < inputs.minSuccessfulScanners
+    ) {
+      logger.error('Not enough successful scanners', {
+        successful: successfulScanners.length,
+        required: inputs.minSuccessfulScanners,
+      });
       await postOrUpdateComment(
         githubConfig,
         {
-          judgeOutput:
-            '⚠️ AI review could not be completed — all scanner models failed. Check the Actions run log for details.',
+          judgeOutput: `⚠️ AI review could not be completed — only ${successfulScanners.length} scanner(s) succeeded (minimum required: ${inputs.minSuccessfulScanners}). Check the Actions run log for details.`,
           scannerResults,
           truncation: diff.truncation,
+          coverage,
+          degraded,
         },
         inputs.commentMarker
       );
@@ -255,6 +312,8 @@ async function run(): Promise<void> {
           judgeOutput: `⚠️ AI review could not be completed (judge aggregation failed: ${describeErrorClass(judgeResult.error)}). Check the Actions run log for details.`,
           scannerResults,
           truncation: diff.truncation,
+          coverage,
+          degraded,
         },
         inputs.commentMarker
       );
@@ -273,7 +332,10 @@ async function run(): Promise<void> {
     findingsCount = judgeResult.findings?.length ?? 0;
 
     // Step 4: Post results to GitHub
-    await postResults(inputs, githubConfig, judgeResult, diff, scannerResults);
+    await postResults(inputs, githubConfig, judgeResult, diff, scannerResults, {
+      coverage,
+      degraded,
+    });
 
     const totalDuration = Math.round(performance.now() - startTime);
 

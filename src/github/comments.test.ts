@@ -7,7 +7,7 @@ import {
   postInlineReview,
 } from './comments.js';
 import type { ReviewCommentData } from './comments.js';
-import type { ScannerResult } from '../review/scanner.js';
+import type { ScannerResult, RoleCoverage } from '../review/scanner.js';
 import type { InlineFinding } from '../review/judge.js';
 import type { TruncationInfo, FileDiff, GitHubConfig } from './diff.js';
 
@@ -112,6 +112,17 @@ function makeFinding(overrides: Partial<InlineFinding> = {}): InlineFinding {
 }
 
 const DEFAULT_MARKER = 'enterprise-ai-review-marker';
+
+const DEGRADED_WARNING = '> ⚠️ Degraded scanner coverage this run — see Sources.';
+
+const FULL_COVERAGE: RoleCoverage[] = [
+  { role: 'security', status: 'covered' },
+  { role: 'logic', status: 'rescued' },
+  { role: 'performance', status: 'uncovered' },
+];
+
+const FULL_COVERAGE_LINE =
+  'Coverage: security ✅ · logic 🔁 rescued · performance ❌ uncovered';
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -308,6 +319,153 @@ describe('buildCommentBody', () => {
 
     expect(body).toContain('`@octocat`');
     expect(body).not.toContain(' @octocat');
+  });
+});
+
+describe('buildCommentBody — origin rendering', () => {
+  it('renders (role, rescue) for rescue-origin scanner results', () => {
+    const scannerResults = [
+      makeScannerResult({ model: 'z-ai/glm-5.2', role: 'logic', origin: 'rescue' }),
+    ];
+    const body = buildCommentBody(
+      makeReviewCommentData({ scannerResults }),
+      DEFAULT_MARKER
+    );
+
+    expect(body).toContain('`z-ai/glm-5.2` (logic, rescue): ✅ OK');
+  });
+
+  it('renders plain (role) for scanner-origin and origin-less results', () => {
+    const scannerResults = [
+      makeScannerResult({ model: 'model-a', origin: 'scanner' }),
+      makeScannerResult({ model: 'model-b' }),
+    ];
+    const body = buildCommentBody(
+      makeReviewCommentData({ scannerResults }),
+      DEFAULT_MARKER
+    );
+
+    expect(body).toContain('`model-a` (general): ✅ OK');
+    expect(body).toContain('`model-b` (general): ✅ OK');
+    expect(body).not.toContain('rescue');
+  });
+
+  it('renders judge-scan results with the prefixed model name inside backticks and a plain role tag', () => {
+    const scannerResults = [
+      makeScannerResult({
+        model: 'judge-scan:openai/gpt-4o',
+        role: 'security',
+        origin: 'judge-scan',
+      }),
+    ];
+    const body = buildCommentBody(
+      makeReviewCommentData({ scannerResults }),
+      DEFAULT_MARKER
+    );
+
+    expect(body).toContain('`judge-scan:openai/gpt-4o` (security): ✅ OK');
+  });
+});
+
+describe('buildCommentBody — coverage line', () => {
+  it('renders the coverage line in the exact format with all three statuses', () => {
+    const body = buildCommentBody(
+      makeReviewCommentData({ coverage: FULL_COVERAGE }),
+      DEFAULT_MARKER
+    );
+
+    expect(body).toContain(FULL_COVERAGE_LINE);
+  });
+
+  it('preserves the coverage array order', () => {
+    const coverage: RoleCoverage[] = [
+      { role: 'performance', status: 'uncovered' },
+      { role: 'logic', status: 'rescued' },
+      { role: 'security', status: 'covered' },
+    ];
+    const body = buildCommentBody(
+      makeReviewCommentData({ coverage }),
+      DEFAULT_MARKER
+    );
+
+    expect(body).toContain(
+      'Coverage: performance ❌ uncovered · logic 🔁 rescued · security ✅'
+    );
+  });
+
+  it('renders the coverage line after the scanner source lines', () => {
+    const body = buildCommentBody(
+      makeReviewCommentData({
+        scannerResults: [makeScannerResult({ model: 'model-a' })],
+        coverage: FULL_COVERAGE,
+      }),
+      DEFAULT_MARKER
+    );
+
+    const scannerLineIdx = body.indexOf('`model-a` (general)');
+    const coverageIdx = body.indexOf('Coverage:');
+    expect(scannerLineIdx).toBeGreaterThanOrEqual(0);
+    expect(coverageIdx).toBeGreaterThan(scannerLineIdx);
+  });
+
+  it('omits the coverage line when coverage is absent', () => {
+    const body = buildCommentBody(makeReviewCommentData(), DEFAULT_MARKER);
+
+    expect(body).not.toContain('Coverage:');
+  });
+
+  it('omits the coverage line when coverage is empty', () => {
+    const body = buildCommentBody(
+      makeReviewCommentData({ coverage: [] }),
+      DEFAULT_MARKER
+    );
+
+    expect(body).not.toContain('Coverage:');
+  });
+});
+
+describe('buildCommentBody — degraded warning', () => {
+  it('inserts the warning after the marker (and its blank line), before Final Review', () => {
+    const body = buildCommentBody(
+      makeReviewCommentData({ degraded: true }),
+      DEFAULT_MARKER
+    );
+
+    expect(body).toContain(
+      `<!-- ${DEFAULT_MARKER} -->\n\n${DEGRADED_WARNING}\n\n### Final Review`
+    );
+  });
+
+  it('appears exactly once', () => {
+    const body = buildCommentBody(
+      makeReviewCommentData({ degraded: true }),
+      DEFAULT_MARKER
+    );
+
+    expect(body.split(DEGRADED_WARNING).length - 1).toBe(1);
+  });
+
+  it('is absent when degraded is false or unset', () => {
+    const withFalse = buildCommentBody(
+      makeReviewCommentData({ degraded: false }),
+      DEFAULT_MARKER
+    );
+    const unset = buildCommentBody(makeReviewCommentData(), DEFAULT_MARKER);
+
+    expect(withFalse).not.toContain(DEGRADED_WARNING);
+    expect(unset).not.toContain(DEGRADED_WARNING);
+  });
+});
+
+describe('buildCommentBody — backward compatibility', () => {
+  it('produces byte-identical output with and without undefined coverage/degraded', () => {
+    const without = buildCommentBody(makeReviewCommentData(), DEFAULT_MARKER);
+    const withUndefined = buildCommentBody(
+      makeReviewCommentData({ coverage: undefined, degraded: undefined }),
+      DEFAULT_MARKER
+    );
+
+    expect(withUndefined).toBe(without);
   });
 });
 
@@ -645,5 +803,91 @@ describe('postInlineReview', () => {
     expect(commentBody).not.toContain('hidden');
     expect(commentBody).not.toContain('sneaky');
     expect(commentBody).toContain('`@maintainer`');
+  });
+});
+
+describe('postInlineReview — coverage/degraded extras', () => {
+  it('threads coverage, degraded, and rescue tags into the inline review body', async () => {
+    await postInlineReview(
+      makeGitHubConfig(),
+      [makeFinding({ line: 2, title: 'A' })],
+      [makeFileDiff()],
+      'sha123',
+      [makeScannerResult({ model: 'model-a', role: 'logic', origin: 'rescue' })],
+      makeTruncationInfo(),
+      DEFAULT_MARKER,
+      { coverage: FULL_COVERAGE, degraded: true }
+    );
+
+    expect(mockOctokit.pulls.createReview).toHaveBeenCalledOnce();
+    const body = mockOctokit.pulls.createReview.mock.calls[0]![0]!.body as string;
+
+    expect(body).toContain(FULL_COVERAGE_LINE);
+    expect(body).toContain('`model-a` (logic, rescue): ✅ OK');
+    // Degraded warning sits right after the "## Enterprise AI Review" heading
+    expect(body.startsWith(`## Enterprise AI Review\n\n${DEGRADED_WARNING}\n\n`)).toBe(true);
+    expect(body.split(DEGRADED_WARNING).length - 1).toBe(1);
+    // Coverage line comes after the scanner source lines
+    expect(body.indexOf('Coverage:')).toBeGreaterThan(body.indexOf('`model-a`'));
+  });
+
+  it('omits coverage and degraded lines when extras are not provided', async () => {
+    await postInlineReview(
+      makeGitHubConfig(),
+      [makeFinding({ line: 2, title: 'A' })],
+      [makeFileDiff()],
+      'sha123',
+      [makeScannerResult()],
+      makeTruncationInfo(),
+      DEFAULT_MARKER
+    );
+
+    const body = mockOctokit.pulls.createReview.mock.calls[0]![0]!.body as string;
+    expect(body).not.toContain('Coverage:');
+    expect(body).not.toContain(DEGRADED_WARNING);
+  });
+
+  it('threads extras into the summary fallback when createReview fails', async () => {
+    mockOctokit.pulls.createReview.mockRejectedValue(
+      new Error('Unprocessable Entity: 422')
+    );
+
+    await postInlineReview(
+      makeGitHubConfig(),
+      [makeFinding({ line: 2, title: 'Matched issue' })],
+      [makeFileDiff()],
+      'sha123',
+      [makeScannerResult()],
+      makeTruncationInfo(),
+      DEFAULT_MARKER,
+      { coverage: FULL_COVERAGE, degraded: true }
+    );
+
+    expect(mockOctokit.issues.createComment).toHaveBeenCalledOnce();
+    const body = mockOctokit.issues.createComment.mock.calls[0]![0]!.body as string;
+    expect(body).toContain(FULL_COVERAGE_LINE);
+    expect(body).toContain(
+      `<!-- ${DEFAULT_MARKER} -->\n\n${DEGRADED_WARNING}\n\n### Final Review`
+    );
+  });
+
+  it('threads extras into the summary fallback when no findings match the diff', async () => {
+    await postInlineReview(
+      makeGitHubConfig(),
+      [makeFinding({ file: 'src/missing.ts', line: 99, title: 'Off-diff issue' })],
+      [makeFileDiff()],
+      'sha123',
+      [makeScannerResult()],
+      makeTruncationInfo(),
+      DEFAULT_MARKER,
+      { coverage: FULL_COVERAGE, degraded: true }
+    );
+
+    expect(mockOctokit.pulls.createReview).not.toHaveBeenCalled();
+    expect(mockOctokit.issues.createComment).toHaveBeenCalledOnce();
+    const body = mockOctokit.issues.createComment.mock.calls[0]![0]!.body as string;
+    expect(body).toContain('Off-diff issue');
+    expect(body).toContain(FULL_COVERAGE_LINE);
+    expect(body).toContain(DEGRADED_WARNING);
   });
 });
