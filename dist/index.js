@@ -7727,6 +7727,7 @@ async function callOpenRouter(config, model, messages, maxTokens, temperature = 
 /* harmony export */ __nccwpck_require__.d(__webpack_exports__, {
 /* harmony export */   R: () => (/* binding */ runJudge)
 /* harmony export */ });
+/* unused harmony export TRUNCATION_MARKER */
 /* harmony import */ var _openrouter_client_js__WEBPACK_IMPORTED_MODULE_0__ = __nccwpck_require__(842);
 /* harmony import */ var _prompts_js__WEBPACK_IMPORTED_MODULE_1__ = __nccwpck_require__(963);
 /* harmony import */ var _utils_logger_js__WEBPACK_IMPORTED_MODULE_2__ = __nccwpck_require__(893);
@@ -7737,6 +7738,13 @@ async function callOpenRouter(config, model, messages, maxTokens, temperature = 
 
 
 
+/**
+ * Appended to the judge output when the model stopped at the max-tokens-judge
+ * limit (finish_reason=length): a truncated review must never read as a
+ * complete one in the posted comment.
+ */
+const TRUNCATION_MARKER = '\n\n---\n⚠️ **[TRUNCATED]** — the judge hit its `max-tokens-judge` limit' +
+    ' (`finish_reason=length`); this review is incomplete. Raise `max-tokens-judge` and re-run.';
 /** Maximum number of inline findings posted to a PR. */
 const MAX_FINDINGS = 30;
 /** Maximum length of a finding title (including the ellipsis when truncated). */
@@ -7888,25 +7896,35 @@ async function runJudge(config, scannerResults, diff) {
             { role: 'system', content: systemPrompt },
             { role: 'user', content: userPrompt },
         ];
-        const { content, tokensUsed } = await (0,_openrouter_client_js__WEBPACK_IMPORTED_MODULE_0__/* .callOpenRouter */ .Ow)(config.openrouter, config.model, messages, config.maxTokens, 0.2);
+        const { content, tokensUsed, finishReason } = await (0,_openrouter_client_js__WEBPACK_IMPORTED_MODULE_0__/* .callOpenRouter */ .Ow)(config.openrouter, config.model, messages, config.maxTokens, 0.2);
         const durationMs = Math.round(performance.now() - start);
+        const truncated = finishReason === 'length';
         _utils_logger_js__WEBPACK_IMPORTED_MODULE_2__/* .logger */ .v.info('Judge finished', {
             tokensUsed,
             durationMs,
             outputLength: content.length,
+            finishReason,
         });
         // Parse findings for inline mode
         let findings;
         if (config.reviewMode === 'inline') {
-            const validModels = successfulScanners.map((r) => r.model);
-            findings = parseInlineFindings(content, validModels);
-            _utils_logger_js__WEBPACK_IMPORTED_MODULE_2__/* .logger */ .v.info('Inline findings parsed', {
-                findingsCount: findings?.length ?? 0,
-                parsedSuccessfully: findings !== undefined,
-            });
+            if (truncated) {
+                // A truncated JSON array can still parse (bracket extraction) and would
+                // post a findings list that silently pretends to be complete — fall back
+                // to the summary path, which carries the visible marker.
+                _utils_logger_js__WEBPACK_IMPORTED_MODULE_2__/* .logger */ .v.warn('Judge output truncated — skipping inline findings parse');
+            }
+            else {
+                const validModels = successfulScanners.map((r) => r.model);
+                findings = parseInlineFindings(content, validModels);
+                _utils_logger_js__WEBPACK_IMPORTED_MODULE_2__/* .logger */ .v.info('Inline findings parsed', {
+                    findingsCount: findings?.length ?? 0,
+                    parsedSuccessfully: findings !== undefined,
+                });
+            }
         }
         return {
-            output: content,
+            output: truncated ? content + TRUNCATION_MARKER : content,
             tokensUsed,
             durationMs,
             success: true,

@@ -22,7 +22,7 @@ vi.mock('./prompts.js', () => ({
   buildJudgeUserPromptInline: vi.fn(() => 'user-inline'),
 }));
 
-import { runJudge } from './judge.js';
+import { runJudge, TRUNCATION_MARKER } from './judge.js';
 import { callOpenRouter } from '../openrouter/client.js';
 import { buildJudgeUserPrompt, buildJudgeUserPromptInline } from './prompts.js';
 
@@ -676,5 +676,60 @@ describe('runJudge', () => {
 
     expect(result.findings![0]!.title).toBe('Short title');
     expect(result.findings![0]!.body).toBe('Short body');
+  });
+
+  it('summary mode: appends the truncation marker when finish_reason is length', async () => {
+    const config = makeConfig();
+    const scannerResults = [makeSuccessfulScanner()];
+
+    mockedCallOpenRouter.mockResolvedValueOnce({
+      content: 'Partial review that stopped mid-sen',
+      tokensUsed: 4000,
+      finishReason: 'length',
+    });
+
+    const result = await runJudge(config, scannerResults, 'mock diff content');
+
+    expect(result.success).toBe(true);
+    expect(result.output).toBe(`Partial review that stopped mid-sen${TRUNCATION_MARKER}`);
+    expect(result.output).toContain('[TRUNCATED]');
+  });
+
+  it('inline mode: truncated output skips findings parse and falls back to summary with the marker', async () => {
+    const config = makeConfig({ reviewMode: 'inline' });
+    const scannerResults = [makeSuccessfulScanner()];
+    // A complete-looking JSON array: without the truncation guard this would
+    // parse and post as a findings list that silently pretends to be complete.
+    const findings = [
+      { file: 'src/app.ts', line: 1, severity: 'info', title: 'Only surviving finding', body: 'x' },
+    ];
+
+    mockedCallOpenRouter.mockResolvedValueOnce({
+      content: JSON.stringify(findings),
+      tokensUsed: 4000,
+      finishReason: 'length',
+    });
+
+    const result = await runJudge(config, scannerResults, 'mock diff content');
+
+    expect(result.success).toBe(true);
+    expect(result.findings).toBeUndefined();
+    expect(result.output).toContain('[TRUNCATED]');
+  });
+
+  it('does not append the marker on a normal stop', async () => {
+    const config = makeConfig();
+    const scannerResults = [makeSuccessfulScanner()];
+
+    mockedCallOpenRouter.mockResolvedValueOnce({
+      content: 'Complete review',
+      tokensUsed: 500,
+      finishReason: 'stop',
+    });
+
+    const result = await runJudge(config, scannerResults, 'mock diff content');
+
+    expect(result.output).toBe('Complete review');
+    expect(result.output).not.toContain('[TRUNCATED]');
   });
 });

@@ -44,6 +44,15 @@ export interface JudgeResult {
   findings?: InlineFinding[] | undefined;
 }
 
+/**
+ * Appended to the judge output when the model stopped at the max-tokens-judge
+ * limit (finish_reason=length): a truncated review must never read as a
+ * complete one in the posted comment.
+ */
+export const TRUNCATION_MARKER =
+  '\n\n---\n⚠️ **[TRUNCATED]** — the judge hit its `max-tokens-judge` limit' +
+  ' (`finish_reason=length`); this review is incomplete. Raise `max-tokens-judge` and re-run.';
+
 /** Maximum number of inline findings posted to a PR. */
 const MAX_FINDINGS = 30;
 /** Maximum length of a finding title (including the ellipsis when truncated). */
@@ -236,7 +245,7 @@ export async function runJudge(
       { role: 'user', content: userPrompt },
     ];
 
-    const { content, tokensUsed } = await callOpenRouter(
+    const { content, tokensUsed, finishReason } = await callOpenRouter(
       config.openrouter,
       config.model,
       messages,
@@ -245,26 +254,35 @@ export async function runJudge(
     );
 
     const durationMs = Math.round(performance.now() - start);
+    const truncated = finishReason === 'length';
 
     logger.info('Judge finished', {
       tokensUsed,
       durationMs,
       outputLength: content.length,
+      finishReason,
     });
 
     // Parse findings for inline mode
     let findings: InlineFinding[] | undefined;
     if (config.reviewMode === 'inline') {
-      const validModels = successfulScanners.map((r) => r.model);
-      findings = parseInlineFindings(content, validModels);
-      logger.info('Inline findings parsed', {
-        findingsCount: findings?.length ?? 0,
-        parsedSuccessfully: findings !== undefined,
-      });
+      if (truncated) {
+        // A truncated JSON array can still parse (bracket extraction) and would
+        // post a findings list that silently pretends to be complete — fall back
+        // to the summary path, which carries the visible marker.
+        logger.warn('Judge output truncated — skipping inline findings parse');
+      } else {
+        const validModels = successfulScanners.map((r) => r.model);
+        findings = parseInlineFindings(content, validModels);
+        logger.info('Inline findings parsed', {
+          findingsCount: findings?.length ?? 0,
+          parsedSuccessfully: findings !== undefined,
+        });
+      }
     }
 
     return {
-      output: content,
+      output: truncated ? content + TRUNCATION_MARKER : content,
       tokensUsed,
       durationMs,
       success: true,

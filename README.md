@@ -204,7 +204,7 @@ scanner-roles: security
 | `max-chars` | No | `80000` | Maximum characters in diff |
 | `timeout-ms` | No | `180000` | API call timeout (3 minutes) |
 | `max-tokens-scanner` | No | `2000` | Max tokens per scanner response |
-| `max-tokens-judge` | No | `4000` | Max tokens for judge response |
+| `max-tokens-judge` | No | `4000` | Max tokens for judge response. If the judge stops at this limit (`finish_reason=length`), the posted comment ends with a visible ⚠️ `[TRUNCATED]` marker and inline findings fall back to summary — a truncated review never reads as a complete one |
 | `comment-marker` | No | `ENTERPRISE_AI_REVIEW` | Marker for finding/updating PR comment |
 | `review-mode` | No | `summary` | Output mode: `summary` (single comment) or `inline` (per-line comments) |
 | `exclude-paths` | No | lockfiles, minified/generated files (see below) | Glob patterns for files to skip (multiline or CSV). Set to `none` to disable exclusions |
