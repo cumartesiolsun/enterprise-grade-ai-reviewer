@@ -24,6 +24,11 @@ export interface ReviewCommentData {
 export interface ReviewExtras {
   coverage?: RoleCoverage[] | undefined;
   degraded?: boolean | undefined;
+  /**
+   * Headline suffix naming the FAILED scanners of a findings run (v0.5.3);
+   * appended to the "Found N finding(s)" line of an inline review body.
+   */
+  degradedSuffix?: string | undefined;
 }
 
 /** Exact warning line rendered when a run had degraded scanner coverage. */
@@ -81,7 +86,9 @@ function getStatusBadge(result: ScannerResult): string {
     case 'OK':
       return '✅ OK';
     case 'SKIPPED':
-      return '⏭️ SKIPPED (empty/NO_FINDINGS)';
+      // The scanner ran and affirmatively reported nothing (v0.5 semantics);
+      // an empty-by-truncation response is FAILED, never SKIPPED.
+      return '⏭️ SKIPPED (NO_FINDINGS — scanner ran, nothing to report)';
     case 'FAILED':
       return `❌ FAILED (${result.error ?? 'unknown error'})`;
     default:
@@ -391,11 +398,14 @@ function buildInlineReviewBody(
     bodyLines.push(DEGRADED_WARNING, '');
   }
 
-  bodyLines.push(
+  const headline =
     `Found **${allFindings.length}** finding(s): ` +
-      `${allFindings.filter((f) => f.severity === 'critical').length} critical, ` +
-      `${allFindings.filter((f) => f.severity === 'warning').length} warning, ` +
-      `${allFindings.filter((f) => f.severity === 'info').length} info`,
+    `${allFindings.filter((f) => f.severity === 'critical').length} critical, ` +
+    `${allFindings.filter((f) => f.severity === 'warning').length} warning, ` +
+    `${allFindings.filter((f) => f.severity === 'info').length} info`;
+
+  bodyLines.push(
+    extras?.degradedSuffix ? `${headline} — ${extras.degradedSuffix}` : headline,
     '',
     '### Sources',
     ''
@@ -581,9 +591,12 @@ export async function postInlineReview(
   // No (new) matched findings — fall back to summary comment
   logger.info('No matched inline findings, falling back to summary');
 
+  const lgtm = extras?.degradedSuffix
+    ? `No issues found in this PR. LGTM! ✅ — ${extras.degradedSuffix}`
+    : 'No issues found in this PR. LGTM! ✅';
   const judgeOutput = unmatched.length > 0
     ? unmatched.map(formatFindingListItem).join('\n\n')
-    : 'No issues found in this PR. LGTM! ✅';
+    : lgtm;
 
   await postOrUpdateComment(
     config,

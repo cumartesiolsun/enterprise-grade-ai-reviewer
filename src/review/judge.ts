@@ -12,6 +12,7 @@ import {
   buildJudgeSystemPromptInline,
   buildJudgeUserPromptInline,
 } from './prompts.js';
+import { hasUsableOutput } from './verdict.js';
 import { logger } from '../utils/logger.js';
 
 export type ReviewMode = 'summary' | 'inline';
@@ -209,23 +210,30 @@ export async function runJudge(
 ): Promise<JudgeResult> {
   const start = performance.now();
 
+  // Successful (OK or SKIPPED) scanners form the sources whitelist; only the
+  // usable ones (actual findings) are merged.
   const successfulScanners = scannerResults.filter((r) => r.success);
+  const usableScanners = scannerResults.filter(hasUsableOutput);
 
   logger.info('Starting judge aggregation', {
     judgeModel: config.model,
-    scannersToMerge: successfulScanners.length,
+    scannersToMerge: usableScanners.length,
     language: config.language,
     reviewMode: config.reviewMode,
   });
 
-  if (successfulScanners.length === 0) {
-    logger.error('No successful scanner results to judge');
+  // The judge only aggregates findings. A pool without usable output is an
+  // all-clear or incomplete run — classified by the caller (verdict.ts)
+  // before the judge is invoked; reaching here with none is a caller bug and
+  // is refused rather than turned into a "could not be completed" review.
+  if (usableScanners.length === 0) {
+    logger.error('No usable scanner output to judge — classify the pool before calling the judge');
     return {
-      output: 'Review could not be completed - all scanners failed.',
+      output: 'Judge not run: no scanner produced usable findings.',
       tokensUsed: 0,
       durationMs: Math.round(performance.now() - start),
       success: false,
-      error: 'No successful scanner results',
+      error: 'No usable scanner output',
     };
   }
 

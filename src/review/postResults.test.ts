@@ -230,6 +230,27 @@ describe('postResults — coverage/degraded extras', () => {
     );
   });
 
+  it('(c) stamps the degraded suffix on the inline LGTM line when the judge kept no findings', async () => {
+    const inputs: PostResultsInput = { reviewMode: 'inline', commentMarker: 'TEST_MARKER' };
+    const judge: PostResultsJudge = { output: '[]', findings: [] };
+    const suffix = '⚠️ DEGRADED — 1 scanner failed: `deepseek/deepseek-v4-pro-0813`';
+
+    await postResults(inputs, makeGitHubConfig(), judge, makeDiff(), [makeScanner()], {
+      ...extras,
+      degradedSuffix: suffix,
+    });
+
+    expect(mockedPostOrUpdate).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        judgeOutput: `No issues found in this PR. LGTM! ✅ — ${suffix}`,
+        coverage,
+        degraded: true,
+      }),
+      'TEST_MARKER'
+    );
+  });
+
   it('threads extras into the summary fallback when findings failed to parse', async () => {
     const inputs: PostResultsInput = { reviewMode: 'inline', commentMarker: 'TEST_MARKER' };
     const judge: PostResultsJudge = { output: 'Raw judge text', findings: undefined };

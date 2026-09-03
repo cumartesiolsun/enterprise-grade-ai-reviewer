@@ -183,7 +183,8 @@ describe('buildCommentBody', () => {
       DEFAULT_MARKER
     );
 
-    expect(body).toContain('`model-b` (general): ⏭️ SKIPPED (empty/NO_FINDINGS)');
+    expect(body).toContain('`model-b` (general): ⏭️ SKIPPED (NO_FINDINGS — scanner ran, nothing to report)');
+    expect(body).not.toContain('empty/NO_FINDINGS');
   });
 
   it('shows FAILED badge with error message for failed scanners', () => {
@@ -635,6 +636,51 @@ describe('postInlineReview', () => {
     expect(reviewArg.body).toContain('`model-a` (general): ✅ OK — contributed to 5 finding(s)');
     expect(reviewArg.body).not.toContain('Found **7**');
     expect(reviewArg.body).not.toContain('contributed to 7 finding(s)');
+  });
+
+  it('(c) stamps the degraded suffix on the "Found N finding(s)" headline when given', async () => {
+    const suffix = '⚠️ DEGRADED — 1 scanner failed: `deepseek/deepseek-v4-pro-0813`';
+    const findings = [makeFinding({ line: 1, title: 'A', sources: ['model-a'] })];
+
+    await postInlineReview(
+      makeGitHubConfig(),
+      findings,
+      [makeFileDiff()],
+      'sha123',
+      [
+        makeScannerResult({ model: 'model-a' }),
+        makeScannerResult({
+          model: 'deepseek/deepseek-v4-pro-0813',
+          status: 'FAILED',
+          success: false,
+          error: 'OpenRouter returned empty response (finish_reason=length, completion_tokens=16000, reasoning=absent)',
+        }),
+      ],
+      makeTruncationInfo(),
+      DEFAULT_MARKER,
+      { degradedSuffix: suffix }
+    );
+
+    const reviewArg = mockOctokit.pulls.createReview.mock.calls[0]![0]!;
+    expect(reviewArg.body).toContain(`Found **1** finding(s): 0 critical, 1 warning, 0 info — ${suffix}`);
+    expect(reviewArg.body).toContain('`deepseek/deepseek-v4-pro-0813` (general): ❌ FAILED (OpenRouter returned empty response');
+  });
+
+  it('leaves the headline unchanged when no degraded suffix is given', async () => {
+    await postInlineReview(
+      makeGitHubConfig(),
+      [makeFinding({ line: 1, title: 'A' })],
+      [makeFileDiff()],
+      'sha123',
+      [makeScannerResult({ model: 'model-a' })],
+      makeTruncationInfo(),
+      DEFAULT_MARKER,
+      { degraded: false }
+    );
+
+    const reviewArg = mockOctokit.pulls.createReview.mock.calls[0]![0]!;
+    expect(reviewArg.body).toContain('Found **1** finding(s): 0 critical, 1 warning, 0 info\n');
+    expect(reviewArg.body).not.toContain('DEGRADED');
   });
 
   it('falls back to a summary comment when createReview fails', async () => {

@@ -28,6 +28,8 @@ export interface PostResultsDiff {
 export interface PostResultsExtras {
   coverage?: RoleCoverage[] | undefined;
   degraded?: boolean | undefined;
+  /** Headline suffix naming FAILED scanners (v0.5.3); inline review body only. */
+  degradedSuffix?: string | undefined;
 }
 
 export async function postResults(
@@ -65,10 +67,11 @@ export async function postResults(
         );
       }
     } else {
+      const lgtm = 'No issues found in this PR. LGTM! ✅';
       await postOrUpdateComment(
         githubConfig,
         {
-          judgeOutput: 'No issues found in this PR. LGTM! ✅',
+          judgeOutput: extras?.degradedSuffix ? `${lgtm} — ${extras.degradedSuffix}` : lgtm,
           scannerResults,
           truncation: diff.truncation,
           coverage: extras?.coverage,
