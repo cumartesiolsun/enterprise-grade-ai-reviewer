@@ -22,6 +22,7 @@ vi.mock('../utils/logger.js', () => ({
 }));
 
 import { runScanners, runJudgeScan } from './scanner.js';
+import { classifyScannerPool } from './verdict.js';
 import { callOpenRouter } from '../openrouter/client.js';
 import { buildScannerSystemPrompt, buildScannerUserPrompt } from './prompts.js';
 
@@ -649,5 +650,90 @@ describe('runJudgeScan', () => {
     expect(result.model).toBe('judge-scan:judge-model');
     expect(result.origin).toBe('judge-scan');
     expect(result.error).toBe('rate limited after retries');
+  });
+});
+
+/**
+ * v0.5.3 fixtures, end to end from the OpenRouter boundary to the pool
+ * class. Shape of VaultLend #76 (run 33799224076): nine scanners plus the
+ * judge scan; deepseek-v4-pro returned an empty completion at 16000 tokens.
+ */
+describe('scanner pool → verdict class (v0.5.3 fixtures)', () => {
+  const EMPTY_AT_16000 =
+    'OpenRouter returned empty response (finish_reason=length, completion_tokens=16000, reasoning=absent)';
+  const FAILED_MODEL = 'deepseek/deepseek-v4-pro-0813';
+  const nineModels = [
+    'vendor/scanner-1',
+    'vendor/scanner-2',
+    'vendor/scanner-3',
+    'vendor/scanner-4',
+    'vendor/scanner-5',
+    'vendor/scanner-6',
+    'vendor/scanner-7',
+    'vendor/scanner-8',
+    FAILED_MODEL,
+  ];
+  const nineRoles: ScannerRole[] = [
+    'security', 'logic', 'performance',
+    'security', 'logic', 'performance',
+    'security', 'logic', 'performance',
+  ];
+  const config: ScannerConfig = { ...mockConfig, models: nineModels, roles: nineRoles };
+
+  it('(a) 10/10 NO_FINDINGS → all-clear', async () => {
+    mockedCallOpenRouter.mockImplementation(async () => ok('NO_FINDINGS', 5));
+
+    const { results, coverage } = await runScanners(config, 'diff content');
+    const judgeScan = await runJudgeScan(config, 'diff content', 'anthropic/claude-sonnet-5', 'general');
+    const pool = classifyScannerPool([...results, judgeScan]);
+
+    expect(results.every((r) => r.status === 'SKIPPED')).toBe(true);
+    expect(judgeScan.status).toBe('SKIPPED');
+    expect(coverage.every((c) => c.status === 'covered')).toBe(true);
+    expect(pool.kind).toBe('all-clear');
+    expect(pool.ran).toBe(10);
+    expect(pool.failAction).toBe(false);
+  });
+
+  it('(b) 9 NO_FINDINGS + deepseek empty at 16000 tokens → FAILED, not SKIPPED → incomplete', async () => {
+    mockedCallOpenRouter.mockImplementation(async (_cfg, model) => {
+      if (model === FAILED_MODEL) throw new Error(EMPTY_AT_16000);
+      return ok('NO_FINDINGS', 5);
+    });
+
+    const { results, coverage } = await runScanners(config, 'diff content');
+    const judgeScan = await runJudgeScan(config, 'diff content', 'anthropic/claude-sonnet-5', 'general');
+    const pool = classifyScannerPool([...results, judgeScan]);
+
+    const failed = results.find((r) => r.model === FAILED_MODEL)!;
+    expect(failed.status).toBe('FAILED');
+    expect(failed.success).toBe(false);
+    expect(failed.error).toBe(EMPTY_AT_16000);
+    expect(results.filter((r) => r.status === 'SKIPPED')).toHaveLength(8);
+    // Coverage is intact (the other performance scanners ran) — exactly why
+    // the pre-v0.5.3 pipeline saw no degradation and stayed green.
+    expect(coverage.every((c) => c.status === 'covered')).toBe(true);
+
+    expect(pool.kind).toBe('incomplete');
+    expect(pool.ran).toBe(9);
+    expect(pool.failed.map((r) => r.model)).toEqual([FAILED_MODEL]);
+    expect(pool.failAction).toBe(true);
+  });
+
+  it('(c) one real finding next to the same failure → findings (judge path), failure carried', async () => {
+    mockedCallOpenRouter.mockImplementation(async (_cfg, model) => {
+      if (model === FAILED_MODEL) throw new Error(EMPTY_AT_16000);
+      if (model === 'vendor/scanner-1') return ok('- [WARNING] src/a.ts:3 — x (confidence: high)', 40);
+      return ok('NO_FINDINGS', 5);
+    });
+
+    const { results } = await runScanners(config, 'diff content');
+    const judgeScan = await runJudgeScan(config, 'diff content', 'anthropic/claude-sonnet-5', 'general');
+    const pool = classifyScannerPool([...results, judgeScan]);
+
+    expect(pool.kind).toBe('findings');
+    expect(pool.usable.map((r) => r.model)).toEqual(['vendor/scanner-1']);
+    expect(pool.failed.map((r) => r.model)).toEqual([FAILED_MODEL]);
+    expect(pool.failAction).toBe(false);
   });
 });

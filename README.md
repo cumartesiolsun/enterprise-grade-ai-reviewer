@@ -61,6 +61,10 @@ Traditional code review tools use a single AI model, which creates a single poin
 - Tasks: remove duplicates, resolve contradictions, discard weak findings (no quoted evidence, or low-confidence with a single source), prioritize critical issues; findings confirmed by 2+ scanners are treated as strong signals
 - Constraint: "Do NOT add new findings. Use only the provided inputs."
 - Summary-mode output has four sections: **Verdict** (APPROVE / APPROVE WITH NITS / REQUEST CHANGES), **Findings** (grouped by severity, with evidence and source models), **Impacted Flows** (user-facing behaviors the change touches), and a **Manual Verification Checklist** (3-6 concrete pre-merge test scenarios)
+- The judge only ever aggregates findings (v0.5.3). Before it runs, the scanner pool is classified:
+  - **all-clear** — every scanner that ran reported `NO_FINDINGS` and none failed → a deterministic **APPROVE** verdict is posted and the judge is not called
+  - **incomplete** — no scanner reported a finding but at least one failed (or nothing ran) → a deterministic **INCOMPLETE** verdict naming the failed scanner(s) is posted and the action fails (fail-closed; re-run the workflow to retry)
+  - **findings** — otherwise the judge aggregates as usual; if any scanner failed, the verdict headline additionally carries `⚠️ DEGRADED — N scanner(s) failed: …` (the verdict itself is unchanged)
 
 ## How It Works
 
@@ -197,7 +201,7 @@ scanner-roles: security
 | `judge-scan` | No | `always` | Judge model also runs its own scan: `always`, `fallback` (only on degraded coverage), or `off` |
 | `judge-scan-role` | No | `general` | Scanner role used for the judge scan |
 | `judge-scan-model` | No | judge-model | Model for the judge scan — lets scan and aggregation be split across two strong models |
-| `min-successful-scanners` | No | `1` | Minimum successful scanner-pool entries (incl. rescues + judge scan) or the action fails; `0` disables |
+| `min-successful-scanners` | No | `1` | Minimum successful scanner-pool entries (incl. rescues + judge scan) or the action fails; `0` disables. `NO_FINDINGS` counts as success; the pool classification (APPROVE / INCOMPLETE / judge, see [Judge](#judge)) runs after this gate |
 | `language` | No | `tr` | Output language (tr, en, etc.) |
 | `base-url` | No | `https://openrouter.ai/api/v1` | OpenRouter API base URL |
 | `max-files` | No | `10` | Maximum files to review |
@@ -321,14 +325,14 @@ PR comments show the status of each scanner model:
 
 - `anthropic/claude-3-haiku` (security): ✅ OK
 - `openai/gpt-4o-mini` (logic): ✅ OK
-- `google/gemini-flash-1.5` (performance): ⏭️ SKIPPED (empty/NO_FINDINGS)
+- `google/gemini-flash-1.5` (performance): ⏭️ SKIPPED (NO_FINDINGS — scanner ran, nothing to report)
 - `x-ai/grok-beta` (general): ❌ FAILED (timeout)
 ```
 
 **Status Types:**
 - `✅ OK` — Scanner returned findings
-- `⏭️ SKIPPED (empty/NO_FINDINGS)` — Scanner returned an empty response or the exact `NO_FINDINGS` sentinel (nothing to report)
-- `❌ FAILED (error)` — Scanner failed (timeout, 429, 5xx, etc.)
+- `⏭️ SKIPPED (NO_FINDINGS — scanner ran, nothing to report)` — Scanner ran and reported the exact `NO_FINDINGS` sentinel, or an intentionally empty completion (`finish_reason: stop`)
+- `❌ FAILED (error)` — Scanner failed (timeout, 429, 5xx, empty/truncated response, etc.)
 
 This helps identify which models are working and which are having issues.
 
@@ -338,7 +342,7 @@ Three layers guarantee that a review actually happened — and tell you when it 
 
 **Recall / precision split.** Cheap parallel scanners maximize *recall* (each hunting its own role), the judge model runs its own independent deep scan (`judge-scan`, on by default — rendered in Sources as `judge-scan:<model>`), and the aggregation judge maximizes *precision*: it verifies every finding against the diff and **never adds findings of its own**. The judge's own scan is deliberately a separate API call whose output enters the scanner pool — a model cannot be an honest referee of findings planted in its own aggregation prompt.
 
-**Empty responses and truncation are failures, not "no findings".** Some models (especially reasoning models) burn the whole token budget on hidden reasoning and return an empty completion. An empty response with `finish_reason: length` (or with reasoning present) is automatically retried with a doubled token budget (capped at 16000) and the OpenRouter `reasoning: { exclude: true, effort: 'low' }` parameter; if it still fails, the scanner is reported FAILED with a diagnostic message — never silently SKIPPED. Only an exact `NO_FINDINGS`, or an intentionally empty completion (`finish_reason: stop`), counts as SKIPPED.
+**Empty responses and truncation are failures, not "no findings".** Some models (especially reasoning models) burn the whole token budget on hidden reasoning and return an empty completion. An empty response with `finish_reason: length` (or with reasoning present) is automatically retried with a doubled token budget (capped at 16000) and the OpenRouter `reasoning: { exclude: true, effort: 'low' }` parameter; if it still fails, the scanner is reported FAILED with a diagnostic message — never silently SKIPPED. Only an exact `NO_FINDINGS`, or an intentionally empty completion (`finish_reason: stop`), counts as SKIPPED. Since v0.5.3 a run with zero findings and at least one such failure gets the verdict **INCOMPLETE** and fails the action instead of reading as clean.
 
 **Automatic role rescue.** If every scanner of a role fails, that role gets one rescue call — using the first unused model from the optional `rescue-models` input, or (with zero configuration) the fastest model that succeeded this run. You can change your model list freely; nothing depends on manual ordering. The Sources section shows rescues as `` `model` (logic, rescue): ✅ OK `` and a per-role summary line:
 
@@ -358,7 +362,9 @@ API calls follow this retry policy:
 
 ## Failure Behavior
 
-- **Scanner failures are tolerated**: a failed scanner is reported as `❌ FAILED` in the Sources section and the remaining scanners' output is still aggregated.
+- **Scanner failures are tolerated when there are findings**: a failed scanner is reported as `❌ FAILED` in the Sources section and the remaining scanners' output is still aggregated; since v0.5.3 the verdict headline also carries `⚠️ DEGRADED — N scanner(s) failed: …`, so the loss is visible without reading Sources.
+- **An all-clear run gets an explicit verdict** (v0.5.3): when every scanner that ran reported `NO_FINDINGS` and none failed, the comment carries a deterministic **APPROVE** and the judge is not called.
+- **No findings plus a failed scanner is INCOMPLETE, not clean** (v0.5.3): the comment carries a deterministic **INCOMPLETE** verdict naming the failed scanner(s) and the action exits non-zero; re-run the workflow to retry. (v0.5.2 and earlier asked the judge to state that the review "could not be completed" and stayed green.)
 - **Judge failure fails the action run**: if the judge model fails after retries, the action exits with a non-zero status and the check turns red. (Previous versions posted the error text as the review and stayed green — that silent-failure behavior has been removed.)
 
 ## Limitations (v0.5)
@@ -389,6 +395,11 @@ src/
 ```
 
 ## Roadmap
+
+### Shipped in v0.5.3
+- ✅ Scanner-pool classification before the judge: all-clear → deterministic **APPROVE** (no judge call); no findings + a failed scanner → deterministic **INCOMPLETE** and a failed run (fail-closed); the "review could not be completed" judge prompt is gone
+- ✅ `⚠️ DEGRADED — N scanner(s) failed: …` stamped on the verdict headline whenever a findings run lost a scanner
+- ✅ Sources badge `⏭️ SKIPPED (NO_FINDINGS — scanner ran, nothing to report)` — the old `(empty/NO_FINDINGS)` wording no longer matched the v0.5 semantics (empty-by-truncation is FAILED)
 
 ### Shipped in v0.5
 - ✅ Empty/truncated-response recovery: adaptive retry with doubled token budget + reasoning exclusion; truncation is never reported as "no findings"

@@ -11,6 +11,13 @@ import { runScanners, runJudgeScan } from './review/scanner.js';
 import type { ScannerConfig, ScannerResult } from './review/scanner.js';
 import { runJudge } from './review/judge.js';
 import type { JudgeConfig } from './review/judge.js';
+import {
+  classifyScannerPool,
+  buildAllClearVerdict,
+  buildIncompleteVerdict,
+  formatDegradedSuffix,
+  appendDegradedSuffix,
+} from './review/verdict.js';
 import { postResults } from './review/postResults.js';
 import type { OpenRouterConfig } from './openrouter/client.js';
 import { writeActionOutputs, writeStepSummary } from './utils/actionOutputs.js';
@@ -277,6 +284,80 @@ async function run(): Promise<void> {
       process.exit(1);
     }
 
+    // Step 2b (v0.5.3): classify the pool before the judge. The judge only
+    // ever aggregates findings; an all-clear or incomplete pool gets a
+    // deterministic verdict instead of a model call.
+    const pool = classifyScannerPool(scannerResults);
+    const scannerTokens = scannerResults.reduce((sum, r) => sum + r.tokensUsed, 0);
+
+    logger.info('Scanner pool classified', {
+      kind: pool.kind,
+      ran: pool.ran,
+      usable: pool.usable.length,
+      failed: pool.failed.map((r) => r.model),
+    });
+
+    if (pool.kind === 'all-clear') {
+      // Every scanner that ran reported NO_FINDINGS and nothing failed:
+      // explicit APPROVE, no judge call. Inline mode takes the existing
+      // empty-findings LGTM path.
+      await postResults(
+        inputs,
+        githubConfig,
+        {
+          output: buildAllClearVerdict(pool, inputs.language),
+          findings: inputs.reviewMode === 'inline' ? [] : undefined,
+        },
+        diff,
+        scannerResults,
+        { coverage, degraded }
+      );
+
+      const totalDuration = Math.round(performance.now() - startTime);
+      logger.info('Review completed: all-clear (judge not called)', {
+        totalDurationMs: totalDuration,
+        totalTokens: scannerTokens,
+        scannersRan: pool.ran,
+      });
+      reportRunOutcome({
+        scannerResults,
+        totalTokens: scannerTokens,
+        findingsCount: 0,
+        durationMs: totalDuration,
+        truncation: diff.truncation,
+      });
+      return;
+    }
+
+    if (pool.kind === 'incomplete') {
+      // No findings, but part of the pool is missing: a clean result cannot
+      // be claimed. Post the INCOMPLETE verdict and fail closed — a workflow
+      // re-run repeats the scan.
+      logger.error('Review incomplete: no findings and at least one scanner failed', {
+        ran: pool.ran,
+        failed: pool.failed.map((r) => `${r.model}: ${r.error ?? 'unknown error'}`),
+      });
+      await postOrUpdateComment(
+        githubConfig,
+        {
+          judgeOutput: buildIncompleteVerdict(pool, inputs.language),
+          scannerResults,
+          truncation: diff.truncation,
+          coverage,
+          degraded,
+        },
+        inputs.commentMarker
+      );
+      reportRunOutcome({
+        scannerResults,
+        totalTokens: scannerTokens,
+        findingsCount: 0,
+        durationMs: Math.round(performance.now() - startTime),
+        truncation: diff.truncation,
+      });
+      process.exit(1);
+    }
+
     // Step 3: Run judge to merge results
     const judgeConfig: JudgeConfig = {
       openrouter: openrouterConfig,
@@ -331,10 +412,20 @@ async function run(): Promise<void> {
 
     findingsCount = judgeResult.findings?.length ?? 0;
 
+    // FAILED scanners in a findings run do not change the verdict (the judge
+    // saw every usable output), but the loss is stamped on the verdict
+    // headline so it is visible without reading Sources.
+    const degradedSuffix = formatDegradedSuffix(pool, inputs.language);
+    const postedJudge =
+      degradedSuffix === undefined
+        ? judgeResult
+        : { ...judgeResult, output: appendDegradedSuffix(judgeResult.output, degradedSuffix) };
+
     // Step 4: Post results to GitHub
-    await postResults(inputs, githubConfig, judgeResult, diff, scannerResults, {
+    await postResults(inputs, githubConfig, postedJudge, diff, scannerResults, {
       coverage,
       degraded,
+      degradedSuffix,
     });
 
     const totalDuration = Math.round(performance.now() - startTime);

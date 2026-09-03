@@ -4,6 +4,7 @@
  */
 
 import type { ScannerResult } from './scanner.js';
+import { hasUsableOutput } from './verdict.js';
 
 /**
  * Review focus assigned to a scanner model (v0.4 role specialization).
@@ -161,12 +162,19 @@ ${escapeUntrustedContent(prContext)}
 }
 
 /**
- * A scanner result is usable for judge aggregation only when it succeeded
- * and produced actual findings (not empty, not the NO_FINDINGS sentinel).
+ * The judge prompts only ever carry findings. A pool without usable output
+ * is classified before the judge (all-clear / incomplete, see verdict.ts) and
+ * must never reach these builders — there is no "review could not be
+ * completed" prompt any more.
  */
-function hasUsableOutput(result: ScannerResult): boolean {
-  const trimmed = result.output.trim();
-  return result.success && trimmed.length > 0 && trimmed !== 'NO_FINDINGS';
+function assertUsableResults(results: ScannerResult[], builder: string): ScannerResult[] {
+  const usable = results.filter(hasUsableOutput);
+  if (usable.length === 0) {
+    throw new Error(
+      `${builder} requires at least one usable scanner result — classify the scanner pool before calling the judge`
+    );
+  }
+  return usable;
 }
 
 /**
@@ -229,11 +237,7 @@ export function buildJudgeUserPrompt(
   diff: string,
   prContext: string = ''
 ): string {
-  const successfulResults = scannerResults.filter(hasUsableOutput);
-
-  if (successfulResults.length === 0) {
-    return 'No scanner results available. Indicate that the review could not be completed.';
-  }
+  const successfulResults = assertUsableResults(scannerResults, 'buildJudgeUserPrompt');
 
   const reviewsText = successfulResults
     .map(
@@ -311,11 +315,7 @@ export function buildJudgeUserPromptInline(
   diff: string,
   prContext: string = ''
 ): string {
-  const successfulResults = scannerResults.filter(hasUsableOutput);
-
-  if (successfulResults.length === 0) {
-    return 'No scanner results available. Return an empty JSON array: []';
-  }
+  const successfulResults = assertUsableResults(scannerResults, 'buildJudgeUserPromptInline');
 
   const reviewsText = successfulResults
     .map(

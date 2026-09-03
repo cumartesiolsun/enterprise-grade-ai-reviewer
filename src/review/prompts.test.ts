@@ -263,12 +263,13 @@ describe('buildJudgeUserPrompt', () => {
     expect(result).toContain('Finding B');
   });
 
-  it('returns a fallback message when no results are successful', () => {
+  it('throws when no results are successful — the judge never gets a "could not be completed" prompt', () => {
     const results: ScannerResult[] = [
       makeScannerResult({ success: false, status: 'FAILED', output: '' }),
     ];
-    const result = buildJudgeUserPrompt(results, 'mock diff');
-    expect(result).toContain('No scanner results available');
+    expect(() => buildJudgeUserPrompt(results, 'mock diff')).toThrow(
+      'buildJudgeUserPrompt requires at least one usable scanner result'
+    );
   });
 
   it('filters out failed results and only includes successful ones', () => {
@@ -313,13 +314,14 @@ describe('buildJudgeUserPrompt', () => {
     expect(result).not.toContain('blank-model');
   });
 
-  it('returns fallback message when all successful results have empty output', () => {
+  it('throws when all successful results have empty output', () => {
     const results: ScannerResult[] = [
       makeScannerResult({ model: 'empty-model', output: '' }),
       makeScannerResult({ model: 'blank-model', output: '  \n ' }),
     ];
-    const result = buildJudgeUserPrompt(results, 'mock diff');
-    expect(result).toContain('No scanner results available');
+    expect(() => buildJudgeUserPrompt(results, 'mock diff')).toThrow(
+      'classify the scanner pool before calling the judge'
+    );
   });
 
   it('excludes results whose trimmed output is exactly NO_FINDINGS', () => {
@@ -346,12 +348,13 @@ describe('buildJudgeUserPrompt', () => {
     expect(result).toContain('verbose-model');
   });
 
-  it('returns fallback message when all successful results are NO_FINDINGS', () => {
+  it('throws when all successful results are NO_FINDINGS (an all-clear is not a judge job)', () => {
     const results: ScannerResult[] = [
       makeScannerResult({ model: 'clean-model', output: 'NO_FINDINGS' }),
     ];
-    const result = buildJudgeUserPrompt(results, 'mock diff');
-    expect(result).toContain('No scanner results available');
+    expect(() => buildJudgeUserPrompt(results, 'mock diff')).toThrow(
+      'buildJudgeUserPrompt requires at least one usable scanner result'
+    );
   });
 
   it('inserts the guarded PR-context block before the Original Diff section', () => {
@@ -445,13 +448,13 @@ describe('buildJudgeUserPromptInline', () => {
     expect(result).toContain('Inline finding');
   });
 
-  it('returns an empty array message when no results are successful', () => {
+  it('throws when no results are successful — no empty-array prompt for an unusable pool', () => {
     const results: ScannerResult[] = [
       makeScannerResult({ success: false, status: 'FAILED', output: '' }),
     ];
-    const result = buildJudgeUserPromptInline(results, 'mock diff');
-    expect(result).toContain('empty JSON array');
-    expect(result).toContain('[]');
+    expect(() => buildJudgeUserPromptInline(results, 'mock diff')).toThrow(
+      'buildJudgeUserPromptInline requires at least one usable scanner result'
+    );
   });
 
   it('wraps the diff in <diff> delimiters and reviews in <scanner_review> tags', () => {
@@ -482,12 +485,13 @@ describe('buildJudgeUserPromptInline', () => {
     expect(result).not.toContain('silent-model');
   });
 
-  it('returns empty array message when all successful results have empty output', () => {
+  it('throws when all successful results have empty output', () => {
     const results: ScannerResult[] = [
       makeScannerResult({ model: 'silent-model', output: '' }),
     ];
-    const result = buildJudgeUserPromptInline(results, 'mock diff');
-    expect(result).toContain('empty JSON array');
+    expect(() => buildJudgeUserPromptInline(results, 'mock diff')).toThrow(
+      'classify the scanner pool before calling the judge'
+    );
   });
 
   it('excludes results whose trimmed output is exactly NO_FINDINGS', () => {
@@ -501,12 +505,13 @@ describe('buildJudgeUserPromptInline', () => {
     expect(result).not.toContain('NO_FINDINGS');
   });
 
-  it('returns empty array message when all successful results are NO_FINDINGS', () => {
+  it('throws when all successful results are NO_FINDINGS', () => {
     const results: ScannerResult[] = [
       makeScannerResult({ model: 'clean-model', output: 'NO_FINDINGS' }),
     ];
-    const result = buildJudgeUserPromptInline(results, 'mock diff');
-    expect(result).toContain('empty JSON array');
+    expect(() => buildJudgeUserPromptInline(results, 'mock diff')).toThrow(
+      'buildJudgeUserPromptInline requires at least one usable scanner result'
+    );
   });
 
   it('inserts the guarded PR-context block before the Original Diff section', () => {

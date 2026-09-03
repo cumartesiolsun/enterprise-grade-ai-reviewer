@@ -64,32 +64,72 @@ function makeFailedScanner(model: string = 'scanner-fail'): ScannerResult {
   };
 }
 
+function makeSkippedScanner(model: string = 'scanner-clean'): ScannerResult {
+  return {
+    model,
+    output: 'NO_FINDINGS',
+    tokensUsed: 5,
+    durationMs: 100,
+    success: true,
+    status: 'SKIPPED',
+  };
+}
+
 describe('runJudge', () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
 
-  it('returns error result when no successful scanner results', async () => {
+  it('refuses to run when every scanner failed (no usable output), without a model call', async () => {
     const config = makeConfig();
     const scannerResults = [makeFailedScanner('model-a'), makeFailedScanner('model-b')];
 
     const result = await runJudge(config, scannerResults, 'mock diff content');
 
     expect(result.success).toBe(false);
-    expect(result.error).toBe('No successful scanner results');
+    expect(result.error).toBe('No usable scanner output');
     expect(result.tokensUsed).toBe(0);
-    expect(result.output).toContain('all scanners failed');
+    expect(result.output).not.toMatch(/could not be completed/i);
     expect(mockedCallOpenRouter).not.toHaveBeenCalled();
   });
 
-  it('returns error result when scanner results array is empty', async () => {
+  it('refuses to run on an empty scanner results array', async () => {
     const config = makeConfig();
 
     const result = await runJudge(config, [], 'mock diff content');
 
     expect(result.success).toBe(false);
-    expect(result.error).toBe('No successful scanner results');
+    expect(result.error).toBe('No usable scanner output');
     expect(mockedCallOpenRouter).not.toHaveBeenCalled();
+  });
+
+  it('refuses to run on a NO_FINDINGS-only pool — that is an all-clear, not a judge job', async () => {
+    const config = makeConfig();
+    const scannerResults = [makeSkippedScanner('clean-a'), makeSkippedScanner('clean-b')];
+
+    const result = await runJudge(config, scannerResults, 'mock diff content');
+
+    expect(result.success).toBe(false);
+    expect(result.error).toBe('No usable scanner output');
+    expect(mockedCallOpenRouter).not.toHaveBeenCalled();
+    expect(mockedBuildJudgeUserPrompt).not.toHaveBeenCalled();
+  });
+
+  it('(c) runs the judge when one scanner has findings next to NO_FINDINGS and FAILED entries', async () => {
+    const config = makeConfig({ reviewMode: 'summary' });
+    const scannerResults = [
+      makeSuccessfulScanner('model-a', 'Found issue X'),
+      makeSkippedScanner('clean-b'),
+      makeFailedScanner('model-c'),
+    ];
+
+    mockedCallOpenRouter.mockResolvedValueOnce({ content: 'Merged output', tokensUsed: 300 });
+
+    const result = await runJudge(config, scannerResults, 'mock diff content');
+
+    expect(result.success).toBe(true);
+    expect(result.output).toBe('Merged output');
+    expect(mockedCallOpenRouter).toHaveBeenCalledOnce();
   });
 
   it('summary mode: calls callOpenRouter and returns output', async () => {

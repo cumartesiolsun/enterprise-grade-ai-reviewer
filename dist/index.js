@@ -6242,7 +6242,9 @@ function getStatusBadge(result) {
         case 'OK':
             return '✅ OK';
         case 'SKIPPED':
-            return '⏭️ SKIPPED (empty/NO_FINDINGS)';
+            // The scanner ran and affirmatively reported nothing (v0.5 semantics);
+            // an empty-by-truncation response is FAILED, never SKIPPED.
+            return '⏭️ SKIPPED (NO_FINDINGS — scanner ran, nothing to report)';
         case 'FAILED':
             return `❌ FAILED (${result.error ?? 'unknown error'})`;
         default:
@@ -6475,10 +6477,11 @@ function buildInlineReviewBody(matched, unmatched, scannerResults, truncation, e
     if (extras?.degraded) {
         bodyLines.push(DEGRADED_WARNING, '');
     }
-    bodyLines.push(`Found **${allFindings.length}** finding(s): ` +
+    const headline = `Found **${allFindings.length}** finding(s): ` +
         `${allFindings.filter((f) => f.severity === 'critical').length} critical, ` +
         `${allFindings.filter((f) => f.severity === 'warning').length} warning, ` +
-        `${allFindings.filter((f) => f.severity === 'info').length} info`, '', '### Sources', '');
+        `${allFindings.filter((f) => f.severity === 'info').length} info`;
+    bodyLines.push(extras?.degradedSuffix ? `${headline} — ${extras.degradedSuffix}` : headline, '', '### Sources', '');
     for (const result of scannerResults) {
         const count = contributions.get(result.model);
         const contrib = count ? ` — contributed to ${count} finding(s)` : '';
@@ -6610,9 +6613,12 @@ async function postInlineReview(config, findings, files, headSha, scannerResults
     }
     // No (new) matched findings — fall back to summary comment
     _utils_logger_js__WEBPACK_IMPORTED_MODULE_2__/* .logger */ .v.info('No matched inline findings, falling back to summary');
+    const lgtm = extras?.degradedSuffix
+        ? `No issues found in this PR. LGTM! ✅ — ${extras.degradedSuffix}`
+        : 'No issues found in this PR. LGTM! ✅';
     const judgeOutput = unmatched.length > 0
         ? unmatched.map(formatFindingListItem).join('\n\n')
-        : 'No issues found in this PR. LGTM! ✅';
+        : lgtm;
     await postOrUpdateComment(config, {
         judgeOutput,
         scannerResults,
@@ -7048,6 +7054,7 @@ __nccwpck_require__.a(module, async (__webpack_handle_async_dependencies__, __we
 /* harmony import */ var _github_comments_js__WEBPACK_IMPORTED_MODULE_1__ = __nccwpck_require__(645);
 /* harmony import */ var _review_scanner_js__WEBPACK_IMPORTED_MODULE_2__ = __nccwpck_require__(878);
 /* harmony import */ var _review_judge_js__WEBPACK_IMPORTED_MODULE_3__ = __nccwpck_require__(939);
+/* harmony import */ var _review_verdict_js__WEBPACK_IMPORTED_MODULE_8__ = __nccwpck_require__(625);
 /* harmony import */ var _review_postResults_js__WEBPACK_IMPORTED_MODULE_4__ = __nccwpck_require__(600);
 /* harmony import */ var _utils_actionOutputs_js__WEBPACK_IMPORTED_MODULE_5__ = __nccwpck_require__(145);
 /* harmony import */ var _utils_logger_js__WEBPACK_IMPORTED_MODULE_6__ = __nccwpck_require__(893);
@@ -7055,6 +7062,7 @@ __nccwpck_require__.a(module, async (__webpack_handle_async_dependencies__, __we
  * Enterprise-Grade AI Reviewer
  * GitHub Action Entry Point (thin orchestrator)
  */
+
 
 
 
@@ -7259,6 +7267,64 @@ async function run() {
             });
             process.exit(1);
         }
+        // Step 2b (v0.5.3): classify the pool before the judge. The judge only
+        // ever aggregates findings; an all-clear or incomplete pool gets a
+        // deterministic verdict instead of a model call.
+        const pool = (0,_review_verdict_js__WEBPACK_IMPORTED_MODULE_8__/* .classifyScannerPool */ .RE)(scannerResults);
+        const scannerTokens = scannerResults.reduce((sum, r) => sum + r.tokensUsed, 0);
+        _utils_logger_js__WEBPACK_IMPORTED_MODULE_6__/* .logger */ .v.info('Scanner pool classified', {
+            kind: pool.kind,
+            ran: pool.ran,
+            usable: pool.usable.length,
+            failed: pool.failed.map((r) => r.model),
+        });
+        if (pool.kind === 'all-clear') {
+            // Every scanner that ran reported NO_FINDINGS and nothing failed:
+            // explicit APPROVE, no judge call. Inline mode takes the existing
+            // empty-findings LGTM path.
+            await (0,_review_postResults_js__WEBPACK_IMPORTED_MODULE_4__/* .postResults */ .l)(inputs, githubConfig, {
+                output: (0,_review_verdict_js__WEBPACK_IMPORTED_MODULE_8__/* .buildAllClearVerdict */ .MV)(pool, inputs.language),
+                findings: inputs.reviewMode === 'inline' ? [] : undefined,
+            }, diff, scannerResults, { coverage, degraded });
+            const totalDuration = Math.round(performance.now() - startTime);
+            _utils_logger_js__WEBPACK_IMPORTED_MODULE_6__/* .logger */ .v.info('Review completed: all-clear (judge not called)', {
+                totalDurationMs: totalDuration,
+                totalTokens: scannerTokens,
+                scannersRan: pool.ran,
+            });
+            reportRunOutcome({
+                scannerResults,
+                totalTokens: scannerTokens,
+                findingsCount: 0,
+                durationMs: totalDuration,
+                truncation: diff.truncation,
+            });
+            return;
+        }
+        if (pool.kind === 'incomplete') {
+            // No findings, but part of the pool is missing: a clean result cannot
+            // be claimed. Post the INCOMPLETE verdict and fail closed — a workflow
+            // re-run repeats the scan.
+            _utils_logger_js__WEBPACK_IMPORTED_MODULE_6__/* .logger */ .v.error('Review incomplete: no findings and at least one scanner failed', {
+                ran: pool.ran,
+                failed: pool.failed.map((r) => `${r.model}: ${r.error ?? 'unknown error'}`),
+            });
+            await (0,_github_comments_js__WEBPACK_IMPORTED_MODULE_1__/* .postOrUpdateComment */ .IL)(githubConfig, {
+                judgeOutput: (0,_review_verdict_js__WEBPACK_IMPORTED_MODULE_8__/* .buildIncompleteVerdict */ .cL)(pool, inputs.language),
+                scannerResults,
+                truncation: diff.truncation,
+                coverage,
+                degraded,
+            }, inputs.commentMarker);
+            reportRunOutcome({
+                scannerResults,
+                totalTokens: scannerTokens,
+                findingsCount: 0,
+                durationMs: Math.round(performance.now() - startTime),
+                truncation: diff.truncation,
+            });
+            process.exit(1);
+        }
         // Step 3: Run judge to merge results
         const judgeConfig = {
             openrouter: openrouterConfig,
@@ -7299,10 +7365,18 @@ async function run() {
             process.exit(1);
         }
         findingsCount = judgeResult.findings?.length ?? 0;
+        // FAILED scanners in a findings run do not change the verdict (the judge
+        // saw every usable output), but the loss is stamped on the verdict
+        // headline so it is visible without reading Sources.
+        const degradedSuffix = (0,_review_verdict_js__WEBPACK_IMPORTED_MODULE_8__/* .formatDegradedSuffix */ .Z8)(pool, inputs.language);
+        const postedJudge = degradedSuffix === undefined
+            ? judgeResult
+            : { ...judgeResult, output: (0,_review_verdict_js__WEBPACK_IMPORTED_MODULE_8__/* .appendDegradedSuffix */ .af)(judgeResult.output, degradedSuffix) };
         // Step 4: Post results to GitHub
-        await (0,_review_postResults_js__WEBPACK_IMPORTED_MODULE_4__/* .postResults */ .l)(inputs, githubConfig, judgeResult, diff, scannerResults, {
+        await (0,_review_postResults_js__WEBPACK_IMPORTED_MODULE_4__/* .postResults */ .l)(inputs, githubConfig, postedJudge, diff, scannerResults, {
             coverage,
             degraded,
+            degradedSuffix,
         });
         const totalDuration = Math.round(performance.now() - startTime);
         _utils_logger_js__WEBPACK_IMPORTED_MODULE_6__/* .logger */ .v.info('Review completed successfully', {
@@ -7730,11 +7804,13 @@ async function callOpenRouter(config, model, messages, maxTokens, temperature = 
 /* unused harmony export TRUNCATION_MARKER */
 /* harmony import */ var _openrouter_client_js__WEBPACK_IMPORTED_MODULE_0__ = __nccwpck_require__(842);
 /* harmony import */ var _prompts_js__WEBPACK_IMPORTED_MODULE_1__ = __nccwpck_require__(963);
+/* harmony import */ var _verdict_js__WEBPACK_IMPORTED_MODULE_3__ = __nccwpck_require__(625);
 /* harmony import */ var _utils_logger_js__WEBPACK_IMPORTED_MODULE_2__ = __nccwpck_require__(893);
 /**
  * Judge Module - Aggregation and Merge Logic
  * Supports summary (free-form) and inline (structured JSON) review modes
  */
+
 
 
 
@@ -7866,21 +7942,28 @@ function parseInlineFindings(content, validModels) {
  */
 async function runJudge(config, scannerResults, diff) {
     const start = performance.now();
+    // Successful (OK or SKIPPED) scanners form the sources whitelist; only the
+    // usable ones (actual findings) are merged.
     const successfulScanners = scannerResults.filter((r) => r.success);
+    const usableScanners = scannerResults.filter(_verdict_js__WEBPACK_IMPORTED_MODULE_3__/* .hasUsableOutput */ .E8);
     _utils_logger_js__WEBPACK_IMPORTED_MODULE_2__/* .logger */ .v.info('Starting judge aggregation', {
         judgeModel: config.model,
-        scannersToMerge: successfulScanners.length,
+        scannersToMerge: usableScanners.length,
         language: config.language,
         reviewMode: config.reviewMode,
     });
-    if (successfulScanners.length === 0) {
-        _utils_logger_js__WEBPACK_IMPORTED_MODULE_2__/* .logger */ .v.error('No successful scanner results to judge');
+    // The judge only aggregates findings. A pool without usable output is an
+    // all-clear or incomplete run — classified by the caller (verdict.ts)
+    // before the judge is invoked; reaching here with none is a caller bug and
+    // is refused rather than turned into a "could not be completed" review.
+    if (usableScanners.length === 0) {
+        _utils_logger_js__WEBPACK_IMPORTED_MODULE_2__/* .logger */ .v.error('No usable scanner output to judge — classify the pool before calling the judge');
         return {
-            output: 'Review could not be completed - all scanners failed.',
+            output: 'Judge not run: no scanner produced usable findings.',
             tokensUsed: 0,
             durationMs: Math.round(performance.now() - start),
             success: false,
-            error: 'No successful scanner results',
+            error: 'No usable scanner output',
         };
     }
     try {
@@ -7974,8 +8057,9 @@ async function postResults(inputs, githubConfig, judgeResult, diff, scannerResul
             }
         }
         else {
+            const lgtm = 'No issues found in this PR. LGTM! ✅';
             await (0,_github_comments_js__WEBPACK_IMPORTED_MODULE_0__/* .postOrUpdateComment */ .IL)(githubConfig, {
-                judgeOutput: 'No issues found in this PR. LGTM! ✅',
+                judgeOutput: extras?.degradedSuffix ? `${lgtm} — ${extras.degradedSuffix}` : lgtm,
                 scannerResults,
                 truncation: diff.truncation,
                 coverage: extras?.coverage,
@@ -8010,10 +8094,12 @@ async function postResults(inputs, githubConfig, judgeResult, diff, scannerResul
 /* harmony export */   eM: () => (/* binding */ buildScannerSystemPrompt),
 /* harmony export */   yt: () => (/* binding */ buildJudgeUserPromptInline)
 /* harmony export */ });
+/* harmony import */ var _verdict_js__WEBPACK_IMPORTED_MODULE_0__ = __nccwpck_require__(625);
 /**
  * Prompts Module - Centralized prompt management
  * Spec-compliant prompts for scanner and judge
  */
+
 /**
  * Escape closing delimiter tags inside untrusted content (diff, scanner
  * output, PR context) so it cannot break out of its <diff> /
@@ -8151,12 +8237,17 @@ ${escapeUntrustedContent(prContext)}
 `;
 }
 /**
- * A scanner result is usable for judge aggregation only when it succeeded
- * and produced actual findings (not empty, not the NO_FINDINGS sentinel).
+ * The judge prompts only ever carry findings. A pool without usable output
+ * is classified before the judge (all-clear / incomplete, see verdict.ts) and
+ * must never reach these builders — there is no "review could not be
+ * completed" prompt any more.
  */
-function hasUsableOutput(result) {
-    const trimmed = result.output.trim();
-    return result.success && trimmed.length > 0 && trimmed !== 'NO_FINDINGS';
+function assertUsableResults(results, builder) {
+    const usable = results.filter(_verdict_js__WEBPACK_IMPORTED_MODULE_0__/* .hasUsableOutput */ .E8);
+    if (usable.length === 0) {
+        throw new Error(`${builder} requires at least one usable scanner result — classify the scanner pool before calling the judge`);
+    }
+    return usable;
 }
 /**
  * Build scanner system prompt (spec-compliant, role-specialized in v0.4)
@@ -8206,10 +8297,7 @@ ${languageInstruction}`;
  * Build judge user prompt from scanner results
  */
 function buildJudgeUserPrompt(scannerResults, diff, prContext = '') {
-    const successfulResults = scannerResults.filter(hasUsableOutput);
-    if (successfulResults.length === 0) {
-        return 'No scanner results available. Indicate that the review could not be completed.';
-    }
+    const successfulResults = assertUsableResults(scannerResults, 'buildJudgeUserPrompt');
     const reviewsText = successfulResults
         .map((r) => `<scanner_review model="${r.model}">\n${escapeUntrustedContent(r.output)}\n</scanner_review>`)
         .join('\n\n');
@@ -8274,10 +8362,7 @@ ${languageInstruction}`;
  * Build judge user prompt for inline review mode.
  */
 function buildJudgeUserPromptInline(scannerResults, diff, prContext = '') {
-    const successfulResults = scannerResults.filter(hasUsableOutput);
-    if (successfulResults.length === 0) {
-        return 'No scanner results available. Return an empty JSON array: []';
-    }
+    const successfulResults = assertUsableResults(scannerResults, 'buildJudgeUserPromptInline');
     const reviewsText = successfulResults
         .map((r) => `<scanner_review model="${r.model}">\n${escapeUntrustedContent(r.output)}\n</scanner_review>`)
         .join('\n\n');
@@ -8539,6 +8624,164 @@ async function runJudgeScan(config, diff, model, role) {
         origin: 'judge-scan',
         reportedModel: `judge-scan:${model}`,
     });
+}
+
+
+/***/ }),
+
+/***/ 625:
+/***/ ((__unused_webpack_module, __webpack_exports__, __nccwpck_require__) => {
+
+/* harmony export */ __nccwpck_require__.d(__webpack_exports__, {
+/* harmony export */   E8: () => (/* binding */ hasUsableOutput),
+/* harmony export */   MV: () => (/* binding */ buildAllClearVerdict),
+/* harmony export */   RE: () => (/* binding */ classifyScannerPool),
+/* harmony export */   Z8: () => (/* binding */ formatDegradedSuffix),
+/* harmony export */   af: () => (/* binding */ appendDegradedSuffix),
+/* harmony export */   cL: () => (/* binding */ buildIncompleteVerdict)
+/* harmony export */ });
+/**
+ * Verdict Module - Scanner-pool classification and deterministic verdicts
+ *
+ * v0.5.3: the judge is only ever asked to aggregate findings. Before the
+ * judge runs, the scanner pool is classified into one of three classes:
+ *
+ *   - 'findings'   — at least one scanner produced usable findings; the judge
+ *                    aggregates them (existing path). FAILED scanners in the
+ *                    pool are tolerated but surfaced in the verdict headline.
+ *   - 'all-clear'  — every scanner that ran reported NO_FINDINGS and nothing
+ *                    failed; a deterministic APPROVE verdict is posted and the
+ *                    judge model is not called.
+ *   - 'incomplete' — no scanner produced findings AND at least one scanner
+ *                    failed (or nothing ran at all); a clean result cannot be
+ *                    claimed, so a deterministic INCOMPLETE verdict is posted
+ *                    and the action fails (fail-closed; re-run to retry).
+ *
+ * Previously the zero-findings-plus-failure case reached the judge with a
+ * "review could not be completed" prompt and the action stayed green.
+ */
+/**
+ * A scanner result is usable for judge aggregation only when it succeeded
+ * and produced actual findings (not empty, not the NO_FINDINGS sentinel).
+ */
+function hasUsableOutput(result) {
+    const trimmed = result.output.trim();
+    return result.success && trimmed.length > 0 && trimmed !== 'NO_FINDINGS';
+}
+/**
+ * Classify the scanner pool (regular + rescue + judge-scan results).
+ * Pure: no I/O, no model call.
+ */
+function classifyScannerPool(results) {
+    const usable = results.filter(hasUsableOutput);
+    const failed = results.filter((r) => r.status === 'FAILED');
+    const ran = results.filter((r) => r.status === 'OK' || r.status === 'SKIPPED').length;
+    if (usable.length > 0) {
+        return { kind: 'findings', ran, usable, failed, failAction: false };
+    }
+    // Nothing usable: an all-clear needs every scanner to have actually run.
+    if (failed.length === 0 && ran > 0) {
+        return { kind: 'all-clear', ran, usable, failed, failAction: false };
+    }
+    return { kind: 'incomplete', ran, usable, failed, failAction: true };
+}
+/** Deterministic verdict texts exist in Turkish and English; others fall back to English. */
+function resolveLanguage(language) {
+    const lang = language.toLowerCase();
+    return lang === 'tr' || lang === 'turkish' ? 'tr' : 'en';
+}
+function formatModelList(results) {
+    return results.map((r) => `\`${r.model}\``).join(', ');
+}
+/**
+ * Deterministic APPROVE verdict for an all-clear pool. Mirrors the judge's
+ * four-section structure as far as it can be produced without a judge pass.
+ */
+function buildAllClearVerdict(classification, language) {
+    const n = classification.ran;
+    if (resolveLanguage(language) === 'tr') {
+        return [
+            '## 1. Hüküm',
+            '',
+            `**APPROVE** — koşan ${n} tarayıcının tamamı bu diff için \`NO_FINDINGS\` bildirdi. Birleştirilecek bulgu olmadığından yargıç modeli çağrılmadı.`,
+            '',
+            '## 2. Bulgular',
+            '',
+            'Yok.',
+            '',
+            '_Etkilenen akışlar ve manuel doğrulama listesi bir yargıç geçişi gerektirir; tümü-temiz koşuda üretilmez._',
+        ].join('\n');
+    }
+    const scanners = n === 1 ? 'scanner' : 'scanners';
+    return [
+        '## 1. Verdict',
+        '',
+        `**APPROVE** — all ${n} ${scanners} that ran reported \`NO_FINDINGS\` on this diff. There are no findings to aggregate, so the judge model was not called.`,
+        '',
+        '## 2. Findings',
+        '',
+        'None.',
+        '',
+        '_Impacted Flows and the Manual Verification Checklist require a judge pass and are not generated for an all-clear run._',
+    ].join('\n');
+}
+/**
+ * Deterministic INCOMPLETE verdict: no findings, but part of the pool is
+ * missing. Posted together with a non-zero exit so the check turns red.
+ */
+function buildIncompleteVerdict(classification, language) {
+    const n = classification.failed.length;
+    const list = formatModelList(classification.failed);
+    if (resolveLanguage(language) === 'tr') {
+        const failedClause = n > 0
+            ? `ancak ${n} tarayıcı başarısız oldu: ${list}.`
+            : 'ancak hiçbir tarayıcı çalışmadı.';
+        return [
+            '## 1. Hüküm',
+            '',
+            `**INCOMPLETE** — hiçbir tarayıcı bulgu bildirmedi, ${failedClause} Tarayıcı havuzunun bir kısmı eksikken temiz sonuç iddia edilemez; bu koşu başarısız olarak işaretlendi. Workflow'u yeniden çalıştırın; hata nedenleri Sources bölümünde listelenmiştir.`,
+        ].join('\n');
+    }
+    const failedClause = n > 0
+        ? `but ${n} ${n === 1 ? 'scanner' : 'scanners'} failed: ${list}.`
+        : 'but no scanner ran at all.';
+    return [
+        '## 1. Verdict',
+        '',
+        `**INCOMPLETE** — no scanner reported a finding, ${failedClause} A clean result cannot be claimed while part of the scanner pool is missing, so this run is marked failed. Re-run the workflow; the failure reasons are listed under Sources.`,
+    ].join('\n');
+}
+/**
+ * Headline suffix for the 'findings' class when FAILED scanners are present:
+ * the verdict itself is unchanged (the judge saw every usable output), but
+ * the loss must be visible on the verdict line, not only in Sources.
+ * Returns undefined when nothing failed.
+ */
+function formatDegradedSuffix(classification, language) {
+    const n = classification.failed.length;
+    if (n === 0)
+        return undefined;
+    const list = formatModelList(classification.failed);
+    if (resolveLanguage(language) === 'tr') {
+        return `⚠️ DEGRADED — ${n} tarayıcı başarısız: ${list}`;
+    }
+    return `⚠️ DEGRADED — ${n} ${n === 1 ? 'scanner' : 'scanners'} failed: ${list}`;
+}
+/** The judge is instructed to put one of these tokens on its verdict line. */
+const VERDICT_TOKEN = /\b(?:REQUEST CHANGES|APPROVE(?: WITH NITS)?)\b/;
+/**
+ * Append the degraded suffix to the judge's verdict headline line — the first
+ * line carrying a verdict token. When the judge output has no such line, the
+ * suffix is prepended as its own line so it can never be lost.
+ */
+function appendDegradedSuffix(judgeOutput, suffix) {
+    const lines = judgeOutput.split('\n');
+    const index = lines.findIndex((line) => VERDICT_TOKEN.test(line));
+    if (index === -1) {
+        return `${suffix}\n\n${judgeOutput}`;
+    }
+    lines[index] = `${lines[index].trimEnd()} — ${suffix}`;
+    return lines.join('\n');
 }
 
 
