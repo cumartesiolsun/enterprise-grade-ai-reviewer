@@ -59,18 +59,17 @@ All configuration comes from GitHub Action inputs (defined in `action.yml`), rea
 
 ## Release Workflow
 
-This project uses a floating `latest` tag so consumers can pin to `@latest`. On every release:
+Push the fixed version tag from an up-to-date `main`; `.github/workflows/release.yml` does the rest:
 
 ```bash
-git tag v0.X.Y                      # 1. Create fixed version tag
-git tag -f latest v0.X.Y            # 2. Move latest to the new version
-git push origin v0.X.Y              # 3. Push fixed tag (no force — prevents accidental overwrite)
-git push origin latest -f           # 4. Force-push latest (must force since it moves each release)
+git tag v0.X.Y && git push origin v0.X.Y   # no force — fixed tags are never overwritten
 ```
 
+The workflow rebuilds and fails if the tagged commit's `dist/` is stale, force-moves the floating `latest` and major (`v0`) tags to the new release, and creates the GitHub Release with generated notes. Do **not** move `latest`/`v0` by hand — it races the workflow.
+
 - **Fixed tags** (`v0.1.0`, `v0.2.0`, `v0.3.0`, …) are never moved — they stay for rollback and changelog purposes.
-- **`latest` tag** is force-updated to the latest fixed tag's commit on every release.
-- Run `npm run build` and commit `dist/` **before** tagging.
+- Before tagging: bump `package.json`, add the `CHANGELOG.md` entry, and run `npm run build` with `dist/` committed (CI's dist-drift gate enforces this on the PR).
+- After tagging: check the Release run succeeded and that `git ls-remote --tags origin` shows `latest`, `v0` and `v0.X.Y` on the same commit.
 
 ## Code Conventions
 
