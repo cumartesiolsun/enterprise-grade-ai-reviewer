@@ -157,6 +157,37 @@ describe('runJudge', () => {
       ]),
       config.maxTokens,
       0.2,
+      {
+        reasoningEffort: undefined,
+        providerSort: undefined,
+        emptyRetryEffort: 'medium',
+        maxTimeoutRetries: 1,
+      },
+    );
+  });
+
+  it('forwards reasoning effort and provider sort to callOpenRouter', async () => {
+    const config = makeConfig({ reasoningEffort: 'high', providerSort: 'throughput' });
+    mockedCallOpenRouter.mockResolvedValueOnce({
+      content: 'Summary review output',
+      tokensUsed: 250,
+      finishReason: 'stop',
+    });
+
+    await runJudge(config, [makeSuccessfulScanner()], 'mock diff content');
+
+    expect(mockedCallOpenRouter).toHaveBeenCalledWith(
+      config.openrouter,
+      config.model,
+      expect.any(Array),
+      config.maxTokens,
+      0.2,
+      {
+        reasoningEffort: 'high',
+        providerSort: 'throughput',
+        emptyRetryEffort: 'medium',
+        maxTimeoutRetries: 1,
+      },
     );
   });
 

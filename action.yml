@@ -52,17 +52,24 @@ inputs:
     required: false
     default: '80000'
   timeout-ms:
-    description: 'Timeout for API calls in milliseconds'
+    description: >-
+      Timeout for each API call attempt in milliseconds. Judge calls
+      (aggregation and judge scan) retry a timeout at most once; scanner calls
+      use the full retry budget (up to 3 retries).
     required: false
-    default: '180000'
+    default: '600000'
   max-tokens-scanner:
-    description: 'Maximum tokens for scanner responses'
+    description: >-
+      Maximum tokens for scanner responses, including reasoning tokens on
+      budget-based reasoning models (see scanner-reasoning-effort)
     required: false
-    default: '2000'
+    default: '8000'
   max-tokens-judge:
-    description: 'Maximum tokens for judge response'
+    description: >-
+      Maximum tokens for judge response, including reasoning tokens on
+      budget-based reasoning models (see judge-reasoning-effort)
     required: false
-    default: '4000'
+    default: '32000'
   comment-marker:
     description: 'Marker for finding/updating PR comment'
     required: false
@@ -110,6 +117,32 @@ inputs:
       models.
     required: false
     default: ''
+  judge-reasoning-effort:
+    description: >-
+      OpenRouter reasoning effort for the aggregation judge and the judge scan,
+      sent as reasoning.effort. Valid values: none, low, medium, high, xhigh.
+      For budget-based models (e.g. Anthropic) OpenRouter reserves a share of
+      max-tokens-judge for reasoning (high = 80%). An empty-response retry
+      lowers the effort at most to medium. Providers that reject the
+      parameter are retried without it.
+    required: false
+    default: 'high'
+  scanner-reasoning-effort:
+    description: >-
+      OpenRouter reasoning effort for regular scanners and the rescue pass,
+      sent as reasoning.effort. Valid values: none, low, medium, high, xhigh.
+      Budget-based models reserve a share of max-tokens-scanner for reasoning
+      (medium = 50%). An empty-response retry drops the effort to low.
+    required: false
+    default: 'medium'
+  judge-provider-sort:
+    description: >-
+      OpenRouter provider routing for both judge calls (aggregation and the
+      judge scan), sent as provider: { sort, allow_fallbacks: true }. Valid values: price,
+      throughput, latency. Set to an empty string to send no provider block
+      (OpenRouter default load balancing).
+    required: false
+    default: 'price'
   min-successful-scanners:
     description: >-
       Minimum number of successful scanner-pool entries (regular scanners +

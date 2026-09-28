@@ -3,7 +3,12 @@
  * Supports summary (free-form) and inline (structured JSON) review modes
  */
 
-import type { OpenRouterConfig, ChatMessage } from '../openrouter/client.js';
+import type {
+  OpenRouterConfig,
+  ChatMessage,
+  ProviderSort,
+  ReasoningEffort,
+} from '../openrouter/client.js';
 import { callOpenRouter } from '../openrouter/client.js';
 import type { ScannerResult } from './scanner.js';
 import {
@@ -26,6 +31,20 @@ export interface InlineFinding {
   sources?: string[] | undefined;
 }
 
+/**
+ * Empty-content retries of judge calls (aggregation and judge scan) lower the
+ * reasoning effort at most to this level — the judge keeps reasoning, unlike
+ * scanners, whose retries drop to the client default of 'low'.
+ */
+export const JUDGE_EMPTY_RETRY_EFFORT: ReasoningEffort = 'medium';
+
+/**
+ * Judge calls (aggregation and judge scan) retry a timeout only once: with
+ * long timeout-ms budgets, the default attempt budget would multiply an
+ * already-long wait. Scanners keep the client's default.
+ */
+export const JUDGE_MAX_TIMEOUT_RETRIES = 1;
+
 export interface JudgeConfig {
   openrouter: OpenRouterConfig;
   model: string;
@@ -34,6 +53,10 @@ export interface JudgeConfig {
   reviewMode: ReviewMode;
   /** PR title/body context forwarded to the judge prompts (default ''). */
   prContext?: string | undefined;
+  /** OpenRouter reasoning effort for the judge call. */
+  reasoningEffort?: ReasoningEffort | undefined;
+  /** OpenRouter provider sort for the judge call; undefined sends no provider block. */
+  providerSort?: ProviderSort | undefined;
 }
 
 export interface JudgeResult {
@@ -258,7 +281,13 @@ export async function runJudge(
       config.model,
       messages,
       config.maxTokens,
-      0.2
+      0.2,
+      {
+        reasoningEffort: config.reasoningEffort,
+        providerSort: config.providerSort,
+        emptyRetryEffort: JUDGE_EMPTY_RETRY_EFFORT,
+        maxTimeoutRetries: JUDGE_MAX_TIMEOUT_RETRIES,
+      }
     );
 
     const durationMs = Math.round(performance.now() - start);

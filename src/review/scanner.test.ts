@@ -417,6 +417,35 @@ describe('runScanners', () => {
       expect(coverage).toEqual([{ role: 'security', status: 'covered' }]);
     });
 
+    it('sends the scanner reasoning effort on main-pass and rescue calls alike', async () => {
+      const config: ScannerConfig = {
+        ...mockConfig,
+        models: ['model-a', 'model-b'],
+        roles: ['security', 'logic'],
+        rescueModels: ['rescue-1'],
+        reasoningEffort: 'medium',
+      };
+
+      mockedCallOpenRouter.mockImplementation(async (_cfg, model) => {
+        if (model === 'model-b') throw new Error('model-b down');
+        return ok(`Finding from ${model}`);
+      });
+
+      await runScanners(config, 'diff content');
+
+      expect(mockedCallOpenRouter).toHaveBeenCalledTimes(3);
+      for (const call of mockedCallOpenRouter.mock.calls) {
+        // Scanners never route by provider and keep the client's defaults for
+        // the empty-retry effort ('low') and timeout retries (attempt budget).
+        expect(call[5]).toStrictEqual({
+          reasoningEffort: 'medium',
+          providerSort: undefined,
+          emptyRetryEffort: undefined,
+          maxTimeoutRetries: undefined,
+        });
+      }
+    });
+
     it('rescues an uncovered role with the first unused rescue model and the correct role prompt', async () => {
       const config: ScannerConfig = {
         ...mockConfig,
@@ -622,7 +651,8 @@ describe('runJudgeScan', () => {
       'judge-model',
       expect.any(Array),
       1000,
-      0.3
+      0.3,
+      { reasoningEffort: undefined }
     );
     // Uses the scanner system prompt for the given role
     expect(mockedBuildScannerSystemPrompt).toHaveBeenCalledWith('en', 'security');
@@ -638,6 +668,30 @@ describe('runJudgeScan', () => {
     expect(result.model).toBe('judge-scan:judge-model');
     expect(result.origin).toBe('judge-scan');
     expect(result.role).toBe('logic');
+  });
+
+  it('forwards the judge settings carried by the config it is given', async () => {
+    mockedCallOpenRouter.mockResolvedValueOnce(ok('Judge-scan finding'));
+
+    await runJudgeScan(
+      {
+        ...mockConfig,
+        reasoningEffort: 'xhigh',
+        providerSort: 'latency',
+        emptyRetryEffort: 'medium',
+        maxTimeoutRetries: 1,
+      },
+      'diff content',
+      'judge-model',
+      'general'
+    );
+
+    expect(mockedCallOpenRouter.mock.calls[0]![5]).toStrictEqual({
+      reasoningEffort: 'xhigh',
+      providerSort: 'latency',
+      emptyRetryEffort: 'medium',
+      maxTimeoutRetries: 1,
+    });
   });
 
   it('returns FAILED with the diagnostic message when the client throws', async () => {

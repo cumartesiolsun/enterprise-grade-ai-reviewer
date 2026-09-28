@@ -201,14 +201,17 @@ scanner-roles: security
 | `judge-scan` | No | `always` | Judge model also runs its own scan: `always`, `fallback` (only on degraded coverage), or `off` |
 | `judge-scan-role` | No | `general` | Scanner role used for the judge scan |
 | `judge-scan-model` | No | judge-model | Model for the judge scan — lets scan and aggregation be split across two strong models |
+| `judge-reasoning-effort` | No | `high` | OpenRouter `reasoning.effort` for the aggregation judge **and** the judge scan: `none`, `low`, `medium`, `high`, `xhigh`. See [Reasoning Effort & Provider Routing](#reasoning-effort--provider-routing) |
+| `scanner-reasoning-effort` | No | `medium` | OpenRouter `reasoning.effort` for regular scanners and the rescue pass (same values) |
+| `judge-provider-sort` | No | `price` | OpenRouter provider routing for both judge calls (aggregation and judge scan): `price`, `throughput`, or `latency` (sent with `allow_fallbacks: true`). Set to `''` to send no `provider` block |
 | `min-successful-scanners` | No | `1` | Minimum successful scanner-pool entries (incl. rescues + judge scan) or the action fails; `0` disables. `NO_FINDINGS` counts as success; the pool classification (APPROVE / INCOMPLETE / judge, see [Judge](#judge)) runs after this gate |
 | `language` | No | `tr` | Output language (tr, en, etc.) |
 | `base-url` | No | `https://openrouter.ai/api/v1` | OpenRouter API base URL |
 | `max-files` | No | `10` | Maximum files to review |
 | `max-chars` | No | `80000` | Maximum characters in diff |
-| `timeout-ms` | No | `180000` | API call timeout (3 minutes) |
-| `max-tokens-scanner` | No | `2000` | Max tokens per scanner response |
-| `max-tokens-judge` | No | `4000` | Max tokens for judge response. If the judge stops at this limit (`finish_reason=length`), the posted comment ends with a visible ⚠️ `[TRUNCATED]` marker and inline findings fall back to summary — a truncated review never reads as a complete one |
+| `timeout-ms` | No | `600000` | Timeout per API call attempt (10 minutes — sized for reasoning at the v0.6 token defaults). Judge calls retry a timeout at most once, see [Retry Policy](#retry-policy) |
+| `max-tokens-scanner` | No | `8000` | Max tokens per scanner response (reasoning tokens included on budget-based models) |
+| `max-tokens-judge` | No | `32000` | Max tokens for judge response (reasoning tokens included on budget-based models). If the judge stops at this limit (`finish_reason=length`), the posted comment ends with a visible ⚠️ `[TRUNCATED]` marker and inline findings fall back to summary — a truncated review never reads as a complete one |
 | `comment-marker` | No | `ENTERPRISE_AI_REVIEW` | Marker for finding/updating PR comment |
 | `review-mode` | No | `summary` | Output mode: `summary` (single comment) or `inline` (per-line comments) |
 | `exclude-paths` | No | lockfiles, minified/generated files (see below) | Glob patterns for files to skip (multiline or CSV). Set to `none` to disable exclusions |
@@ -342,7 +345,7 @@ Three layers guarantee that a review actually happened — and tell you when it 
 
 **Recall / precision split.** Cheap parallel scanners maximize *recall* (each hunting its own role), the judge model runs its own independent deep scan (`judge-scan`, on by default — rendered in Sources as `judge-scan:<model>`), and the aggregation judge maximizes *precision*: it verifies every finding against the diff and **never adds findings of its own**. The judge's own scan is deliberately a separate API call whose output enters the scanner pool — a model cannot be an honest referee of findings planted in its own aggregation prompt.
 
-**Empty responses and truncation are failures, not "no findings".** Some models (especially reasoning models) burn the whole token budget on hidden reasoning and return an empty completion. An empty response with `finish_reason: length` (or with reasoning present) is automatically retried with a doubled token budget (capped at 16000) and the OpenRouter `reasoning: { exclude: true, effort: 'low' }` parameter; if it still fails, the scanner is reported FAILED with a diagnostic message — never silently SKIPPED. Only an exact `NO_FINDINGS`, or an intentionally empty completion (`finish_reason: stop`), counts as SKIPPED. Since v0.5.3 a run with zero findings and at least one such failure gets the verdict **INCOMPLETE** and fails the action instead of reading as clean.
+**Empty responses and truncation are failures, not "no findings".** Some models (especially reasoning models) burn the whole token budget on hidden reasoning and return an empty completion. An empty response with `finish_reason: length` (or with reasoning present) is automatically retried with a doubled token budget (capped at 16000, never below the configured budget) and the OpenRouter `reasoning: { exclude: true, … }` parameter with a reduced effort (see [Reasoning Effort & Provider Routing](#reasoning-effort--provider-routing)); if it still fails, the scanner is reported FAILED with a diagnostic message — never silently SKIPPED. Only an exact `NO_FINDINGS`, or an intentionally empty completion (`finish_reason: stop`), counts as SKIPPED. Since v0.5.3 a run with zero findings and at least one such failure gets the verdict **INCOMPLETE** and fails the action instead of reading as clean.
 
 **Automatic role rescue.** If every scanner of a role fails, that role gets one rescue call — using the first unused model from the optional `rescue-models` input, or (with zero configuration) the fastest model that succeeded this run. You can change your model list freely; nothing depends on manual ordering. The Sources section shows rescues as `` `model` (logic, rescue): ✅ OK `` and a per-role summary line:
 
@@ -352,13 +355,39 @@ Coverage: security ✅ · logic 🔁 rescued · performance ❌ uncovered
 
 If a role needed rescue, stayed uncovered, or a fallback judge scan had to run, the review comment is prefixed with `> ⚠️ Degraded scanner coverage this run — see Sources.` Finally, `min-successful-scanners` (default 1, counting rescues and the judge scan) fails the action outright when unmet.
 
+## Reasoning Effort & Provider Routing (v0.6)
+
+Every OpenRouter call carries an explicit [`reasoning.effort`](https://openrouter.ai/docs/use-cases/reasoning-tokens):
+
+| Call | Effort input | Provider routing |
+|------|--------------|------------------|
+| Regular scanners + rescue pass | `scanner-reasoning-effort` (default `medium`) | OpenRouter default |
+| Judge scan (`judge-scan:<model>`) | `judge-reasoning-effort` (default `high`) | `judge-provider-sort` (default `price`) |
+| Aggregation judge | `judge-reasoning-effort` (default `high`) | `judge-provider-sort` (default `price`) |
+
+```yaml
+- uses: cumartesiolsun/enterprise-grade-ai-reviewer@latest
+  with:
+    # ...
+    judge-reasoning-effort: xhigh
+    scanner-reasoning-effort: low
+    judge-provider-sort: throughput
+```
+
+- **Invalid values fail the action immediately** with a message listing the valid values — a typo never silently falls back to a default.
+- **Unsupported effort never fails a review.** `provider.require_parameters` is never set, so providers that ignore `reasoning` stay eligible; if a provider rejects the request with a 400, the call is retried once without the `reasoning` field.
+- **Reasoning never reaches the review.** Only the message `content` is parsed for findings; the model's `reasoning` output is ignored.
+- **Budget-based models share `max_tokens` with reasoning — hence the v0.6 token defaults.** For Anthropic-style models OpenRouter sets `budget_tokens = max_tokens × ratio` (`xhigh` 0.95, `high` 0.8, `medium` 0.5, `low` 0.2). v0.6 raises the defaults to `max-tokens-judge: 32000` (≈25600 reasoning + ≈6400 answer at `high`) and `max-tokens-scanner: 8000` (≈4000 + ≈4000 at `medium`); the old 4000/2000 would have left the judge only ~800 answer tokens. If you pin lower token budgets, lower the effort with them. `max_tokens` is a ceiling, not a charge — you pay for tokens actually generated, though higher effort does generate more reasoning tokens.
+- **Empty completions are retried with less reasoning.** The retry sends `reasoning: { exclude: true, effort }` with a doubled budget (capped at 16000; a larger configured budget such as the 32000 judge default is kept, never cut). Scanner retries drop the effort to `low`; judge retries (aggregation and judge scan) drop it at most to `medium` — `low` stays `low`, and `none` always stays `none`.
+
 ## Retry Policy
 
 API calls follow this retry policy:
 - **Retry**: 429 (rate limit), 5xx (server errors), network/timeout errors, empty/truncated responses (with adaptive token budget, see above)
-- **No Retry**: 400 (bad request) — fails immediately (except a 400 rejecting the retry-only `reasoning` parameter, which is retried once without it)
+- **No Retry**: 400 (bad request) — fails immediately (except a 400 on a request carrying the `reasoning` parameter, which is retried without it)
 - **Backoff**: Exponential (1s, 2s, 4s)
 - **Max Retries**: 3
+- **Timeouts on judge calls** (v0.6): the aggregation judge and the judge scan retry a timeout **at most once** — at the default `timeout-ms` (10 minutes) a judge call is abandoned after ~20 minutes instead of ~40. Scanner calls keep the full budget. The limit counts timeouts only: empty-response, 429/5xx and network-error retries are unaffected.
 
 ## Failure Behavior
 
@@ -395,6 +424,13 @@ src/
 ```
 
 ## Roadmap
+
+### Shipped in v0.6.0
+- ✅ Explicit OpenRouter reasoning effort per call class (`judge-reasoning-effort`, `scanner-reasoning-effort`); the judge scan uses the judge effort
+- ✅ Judge provider routing (`judge-provider-sort`: `price` / `throughput` / `latency`, with `allow_fallbacks: true`) on both judge calls
+- ✅ Token defaults raised to leave room for reasoning: `max-tokens-judge` 32000, `max-tokens-scanner` 8000
+- ✅ Judge empty-response retries keep reasoning at `medium` instead of dropping to `low`
+- ✅ `timeout-ms` default raised to 600000 (10 min); judge calls retry a timeout at most once
 
 ### Shipped in v0.5.3
 - ✅ Scanner-pool classification before the judge: all-clear → deterministic **APPROVE** (no judge call); no findings + a failed scanner → deterministic **INCOMPLETE** and a failed run (fail-closed); the "review could not be completed" judge prompt is gone

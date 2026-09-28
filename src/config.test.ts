@@ -10,6 +10,8 @@ import {
   parseScannerRoles,
   parseScannerRole,
   parseJudgeScanMode,
+  parseReasoningEffort,
+  parseJudgeProviderSort,
   parseExcludePaths,
   parseInputs,
 } from './config.js';
@@ -154,6 +156,54 @@ describe('parseJudgeScanMode', () => {
     expect(() => parseJudgeScanMode('sometimes')).toThrow(
       "Input 'judge-scan' has invalid value 'sometimes'. " +
         'Valid values: always, fallback, off.'
+    );
+  });
+});
+
+describe('parseReasoningEffort', () => {
+  it.each([['none'], ['low'], ['medium'], ['high'], ['xhigh']])('parses %j', (raw) => {
+    expect(parseReasoningEffort('judge-reasoning-effort', raw)).toBe(raw);
+  });
+
+  it('normalizes case and whitespace', () => {
+    expect(parseReasoningEffort('judge-reasoning-effort', ' High ')).toBe('high');
+    expect(parseReasoningEffort('scanner-reasoning-effort', 'XHIGH')).toBe('xhigh');
+  });
+
+  it.each([['extreme'], ['minimal'], ['1'], ['max']])(
+    'rejects %j with a clear error naming the input',
+    (raw) => {
+      expect(() => parseReasoningEffort('scanner-reasoning-effort', raw)).toThrow(
+        `Input 'scanner-reasoning-effort' has invalid value '${raw}'. ` +
+          'Valid values: none, low, medium, high, xhigh.'
+      );
+    }
+  );
+});
+
+describe('parseJudgeProviderSort', () => {
+  it('defaults to price when the input is unset', () => {
+    expect(parseJudgeProviderSort({})).toBe('price');
+  });
+
+  it.each([['price'], ['throughput'], ['latency']])('parses %j', (raw) => {
+    expect(parseJudgeProviderSort({ 'INPUT_JUDGE-PROVIDER-SORT': raw })).toBe(raw);
+  });
+
+  it('normalizes case and whitespace', () => {
+    expect(parseJudgeProviderSort({ 'INPUT_JUDGE-PROVIDER-SORT': ' Throughput ' })).toBe(
+      'throughput'
+    );
+  });
+
+  it.each([[''], ['   ']])('returns undefined (send nothing) for an explicitly empty value %j', (raw) => {
+    expect(parseJudgeProviderSort({ 'INPUT_JUDGE-PROVIDER-SORT': raw })).toBeUndefined();
+  });
+
+  it('rejects an unknown sort with a clear error', () => {
+    expect(() => parseJudgeProviderSort({ 'INPUT_JUDGE-PROVIDER-SORT': 'cheapest' })).toThrow(
+      "Input 'judge-provider-sort' has invalid value 'cheapest'. " +
+        'Valid values: price, throughput, latency (or empty to disable).'
     );
   });
 });
@@ -335,14 +385,17 @@ describe('parseInputs', () => {
       judgeScan: 'always',
       judgeScanRole: 'general',
       judgeScanModel: 'openai/gpt-4o',
+      judgeReasoningEffort: 'high',
+      scannerReasoningEffort: 'medium',
+      judgeProviderSort: 'price',
       minSuccessfulScanners: 1,
       language: 'tr',
       autoSelectModels: false,
       maxFiles: 10,
       maxChars: 80000,
-      timeoutMs: 180000,
-      maxTokensScanner: 2000,
-      maxTokensJudge: 4000,
+      timeoutMs: 600000,
+      maxTokensScanner: 8000,
+      maxTokensJudge: 32000,
       commentMarker: 'ENTERPRISE_AI_REVIEW',
       reviewMode: 'summary',
       excludePaths: DEFAULT_EXCLUDE_PATHS,
@@ -369,6 +422,9 @@ describe('parseInputs', () => {
       'INPUT_JUDGE-SCAN-ROLE': 'security',
       'INPUT_JUDGE-SCAN-MODEL': 'd/scan',
       'INPUT_MIN-SUCCESSFUL-SCANNERS': '2',
+      'INPUT_JUDGE-REASONING-EFFORT': 'xhigh',
+      'INPUT_SCANNER-REASONING-EFFORT': 'low',
+      'INPUT_JUDGE-PROVIDER-SORT': 'latency',
     });
 
     expect(parseInputs(env)).toEqual({
@@ -382,6 +438,9 @@ describe('parseInputs', () => {
       judgeScan: 'fallback',
       judgeScanRole: 'security',
       judgeScanModel: 'd/scan',
+      judgeReasoningEffort: 'xhigh',
+      scannerReasoningEffort: 'low',
+      judgeProviderSort: 'latency',
       minSuccessfulScanners: 2,
       language: 'en',
       autoSelectModels: false,
@@ -481,6 +540,43 @@ describe('parseInputs', () => {
     expect(() =>
       parseInputs(baseEnv({ 'INPUT_COMMENT-MARKER': 'has space' }))
     ).toThrow(/comment-marker/);
+  });
+
+  describe('reasoning effort / provider sort', () => {
+    it('falls back to the defaults when the effort inputs are empty', () => {
+      const inputs = parseInputs(
+        baseEnv({
+          'INPUT_JUDGE-REASONING-EFFORT': '',
+          'INPUT_SCANNER-REASONING-EFFORT': '',
+        })
+      );
+      expect(inputs.judgeReasoningEffort).toBe('high');
+      expect(inputs.scannerReasoningEffort).toBe('medium');
+    });
+
+    it('rejects an invalid judge-reasoning-effort', () => {
+      expect(() =>
+        parseInputs(baseEnv({ 'INPUT_JUDGE-REASONING-EFFORT': 'ultra' }))
+      ).toThrow("Input 'judge-reasoning-effort' has invalid value 'ultra'.");
+    });
+
+    it('rejects an invalid scanner-reasoning-effort', () => {
+      expect(() =>
+        parseInputs(baseEnv({ 'INPUT_SCANNER-REASONING-EFFORT': 'hi' }))
+      ).toThrow("Input 'scanner-reasoning-effort' has invalid value 'hi'.");
+    });
+
+    it('omits the provider sort when judge-provider-sort is explicitly empty', () => {
+      expect(
+        parseInputs(baseEnv({ 'INPUT_JUDGE-PROVIDER-SORT': '' })).judgeProviderSort
+      ).toBeUndefined();
+    });
+
+    it('rejects an invalid judge-provider-sort', () => {
+      expect(() =>
+        parseInputs(baseEnv({ 'INPUT_JUDGE-PROVIDER-SORT': 'fastest' }))
+      ).toThrow("Input 'judge-provider-sort' has invalid value 'fastest'.");
+    });
   });
 
   describe('rescue-models', () => {
