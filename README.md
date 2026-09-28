@@ -466,7 +466,7 @@ src/
 ## Development & CI
 
 - CI runs on every push to `main` and every pull request: `typecheck`, `lint`, `test`, `build`, plus a **dist-drift check** — the committed `dist/` bundle must match a fresh build (`npm run build`), otherwise CI fails.
-- Releases are automated: pushing a `v*` tag triggers the release workflow, which verifies the tagged commit's `dist/` is up to date, force-moves the floating `latest` tag to the new release, and creates a GitHub Release with generated notes.
+- Releases are automated: pushing a `v*` tag triggers the release workflow, which verifies the tagged commit's `dist/` is up to date, force-moves the floating `latest` and major (`v0`) tags to the new release, and creates a GitHub Release with generated notes.
 
 ## License
 
