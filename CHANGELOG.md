@@ -4,7 +4,19 @@ All notable changes to this project are documented here. Versions follow the
 fixed release tags (`v0.X.Y`); the floating `latest` / `v0` tags point at the
 newest one.
 
-## v0.6.0
+## v0.6.1
+
+### Changed
+- **Scanner calls retry a timeout at most once**, the same as judge calls
+  since v0.6.0. This covers regular scanners and the rescue pass. At the
+  default `timeout-ms` (600000) a scanner stuck on timeouts is now abandoned
+  after ~20 minutes instead of up to ~40. The limit counts timeouts
+  (`AbortError`) only: empty-response, 429/5xx and network-error retries keep
+  the full budget of 3 retries.
+- The one-retry limit is now the client default (`DEFAULT_MAX_TIMEOUT_RETRIES`)
+  instead of a judge-only setting; `CallOptions.maxTimeoutRetries` remains as
+  a per-call override.
+
 
 ### Added
 - `judge-reasoning-effort` input (default `high`): sent as OpenRouter
@@ -56,7 +68,7 @@ newest one.
   longer.
 - Scanner calls can now wait up to 4 × 10 minutes on repeated timeouts. If
   your workflow sets a job-level `timeout-minutes`, make sure it leaves room
-  for that, or pin a lower `timeout-ms`.
+  for that, or pin a lower `timeout-ms`. *(Reduced to 2 × in v0.6.1.)*
 - Only message `content` is parsed for findings; model `reasoning` output is
   never mixed into the review (unchanged, now covered by tests).
 

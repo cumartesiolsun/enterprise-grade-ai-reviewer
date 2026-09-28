@@ -38,13 +38,6 @@ export interface InlineFinding {
  */
 export const JUDGE_EMPTY_RETRY_EFFORT: ReasoningEffort = 'medium';
 
-/**
- * Judge calls (aggregation and judge scan) retry a timeout only once: with
- * long timeout-ms budgets, the default attempt budget would multiply an
- * already-long wait. Scanners keep the client's default.
- */
-export const JUDGE_MAX_TIMEOUT_RETRIES = 1;
-
 export interface JudgeConfig {
   openrouter: OpenRouterConfig;
   model: string;
@@ -286,7 +279,6 @@ export async function runJudge(
         reasoningEffort: config.reasoningEffort,
         providerSort: config.providerSort,
         emptyRetryEffort: JUDGE_EMPTY_RETRY_EFFORT,
-        maxTimeoutRetries: JUDGE_MAX_TIMEOUT_RETRIES,
       }
     );
 

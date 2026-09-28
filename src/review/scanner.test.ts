@@ -435,13 +435,12 @@ describe('runScanners', () => {
 
       expect(mockedCallOpenRouter).toHaveBeenCalledTimes(3);
       for (const call of mockedCallOpenRouter.mock.calls) {
-        // Scanners never route by provider and keep the client's defaults for
-        // the empty-retry effort ('low') and timeout retries (attempt budget).
+        // Scanners never route by provider and keep the client's default
+        // empty-retry effort ('low') — both options stay undefined.
         expect(call[5]).toStrictEqual({
           reasoningEffort: 'medium',
           providerSort: undefined,
           emptyRetryEffort: undefined,
-          maxTimeoutRetries: undefined,
         });
       }
     });
@@ -679,7 +678,6 @@ describe('runJudgeScan', () => {
         reasoningEffort: 'xhigh',
         providerSort: 'latency',
         emptyRetryEffort: 'medium',
-        maxTimeoutRetries: 1,
       },
       'diff content',
       'judge-model',
@@ -690,7 +688,6 @@ describe('runJudgeScan', () => {
       reasoningEffort: 'xhigh',
       providerSort: 'latency',
       emptyRetryEffort: 'medium',
-      maxTimeoutRetries: 1,
     });
   });
 

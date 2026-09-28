@@ -292,15 +292,61 @@ describe('callOpenRouter', () => {
       expect(mockFetch).toHaveBeenCalledTimes(2);
     });
 
-    it('keeps the full attempt budget (3 timeout retries) when unset', async () => {
+    it('retries a timeout only once by default (scanner calls pass no limit)', async () => {
       mockFetch.mockRejectedValue(abortError());
 
-      const promise = callOpenRouter(defaultConfig, 'test-model', defaultMessages, 1000);
+      // Scanner-style call: no maxTimeoutRetries in the options
+      const promise = callOpenRouter(defaultConfig, 'test-model', defaultMessages, 1000, 0.3, {
+        reasoningEffort: 'medium',
+      });
+      const captured = promise.catch((error: unknown) => error);
+      await vi.runAllTimersAsync();
+      const error = await captured;
+
+      expect((error as Error).name).toBe('AbortError');
+      expect(mockFetch).toHaveBeenCalledTimes(2);
+    });
+
+    it('lets an explicit maxTimeoutRetries raise the default limit', async () => {
+      mockFetch.mockRejectedValue(abortError());
+
+      const promise = callOpenRouter(defaultConfig, 'test-model', defaultMessages, 1000, 0.3, {
+        maxTimeoutRetries: 3,
+      });
       const captured = promise.catch((error: unknown) => error);
       await vi.runAllTimersAsync();
       await captured;
 
       expect(mockFetch).toHaveBeenCalledTimes(4);
+    });
+
+    it('keeps 429/5xx retries on the full budget after the one timeout retry is spent', async () => {
+      mockFetch
+        .mockRejectedValueOnce(abortError()) // timeout → the one allowed retry
+        .mockResolvedValueOnce(mockResponse({ error: 'rate limited' }, 429))
+        .mockResolvedValueOnce(mockResponse({ error: 'upstream down' }, 503))
+        .mockResolvedValueOnce(mockResponse(successBody));
+
+      const promise = callOpenRouter(defaultConfig, 'test-model', defaultMessages, 1000);
+      await vi.runAllTimersAsync();
+
+      expect((await promise).content).toBe('Looks good!');
+      expect(mockFetch).toHaveBeenCalledTimes(4);
+    });
+
+    it('fails on a second timeout even after 5xx retries in between', async () => {
+      mockFetch
+        .mockRejectedValueOnce(abortError()) // timeout → the one allowed retry
+        .mockResolvedValueOnce(mockResponse({ error: 'upstream down' }, 500))
+        .mockRejectedValueOnce(abortError()); // second timeout → no retry left
+
+      const promise = callOpenRouter(defaultConfig, 'test-model', defaultMessages, 1000);
+      const captured = promise.catch((error: unknown) => error);
+      await vi.runAllTimersAsync();
+      const error = await captured;
+
+      expect((error as Error).name).toBe('AbortError');
+      expect(mockFetch).toHaveBeenCalledTimes(3);
     });
 
     it('does not spend the timeout limit on empty-content retries', async () => {
@@ -310,10 +356,8 @@ describe('callOpenRouter', () => {
         .mockRejectedValueOnce(abortError()) // first timeout → the one allowed retry
         .mockResolvedValueOnce(mockResponse(successBody));
 
-      const promise = callOpenRouter(defaultConfig, 'judge-model', defaultMessages, 1000, 0.2, {
-        reasoningEffort: 'high',
-        emptyRetryEffort: 'medium',
-        maxTimeoutRetries: 1,
+      const promise = callOpenRouter(defaultConfig, 'test-model', defaultMessages, 1000, 0.3, {
+        reasoningEffort: 'medium',
       });
       await vi.runAllTimersAsync();
 

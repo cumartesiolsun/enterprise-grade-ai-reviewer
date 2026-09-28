@@ -71,8 +71,6 @@ export interface ScannerConfig {
   providerSort?: ProviderSort | undefined;
   /** Effort cap for empty-content retries; undefined keeps the client default ('low'). */
   emptyRetryEffort?: ReasoningEffort | undefined;
-  /** Timeout retry limit; set only on the judge-scan config. */
-  maxTimeoutRetries?: number | undefined;
 }
 
 /** Internal options for a single scanner call (rescue / judge-scan variants). */
@@ -120,7 +118,6 @@ async function runSingleScanner(
         reasoningEffort: config.reasoningEffort,
         providerSort: config.providerSort,
         emptyRetryEffort: config.emptyRetryEffort,
-        maxTimeoutRetries: config.maxTimeoutRetries,
       }
     );
 
