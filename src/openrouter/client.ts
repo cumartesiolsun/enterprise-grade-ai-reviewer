@@ -16,6 +16,35 @@ export interface ChatMessage {
   content: string;
 }
 
+/** OpenRouter unified reasoning effort levels ('none' disables reasoning). */
+export type ReasoningEffort = 'none' | 'low' | 'medium' | 'high' | 'xhigh';
+
+/** All reasoning effort levels, ordered from least to most reasoning. */
+export const REASONING_EFFORTS: readonly ReasoningEffort[] = [
+  'none',
+  'low',
+  'medium',
+  'high',
+  'xhigh',
+];
+
+/** OpenRouter provider-routing sort strategies. */
+export type ProviderSort = 'price' | 'throughput' | 'latency';
+
+/** Per-call request options layered on top of the base request body. */
+export interface CallOptions {
+  /** Sent as `reasoning: { effort }` on every attempt (until a provider rejects it). */
+  reasoningEffort?: ReasoningEffort | undefined;
+  /** Sent as `provider: { sort, allow_fallbacks: true }`; omitted when undefined. */
+  providerSort?: ProviderSort | undefined;
+  /**
+   * Upper bound for the effort sent on empty-content retries (default 'low').
+   * The retry uses the lower of this and `reasoningEffort`, so a configured
+   * 'none' stays 'none' and a retry never reasons more than the first attempt.
+   */
+  emptyRetryEffort?: ReasoningEffort | undefined;
+}
+
 export interface OpenRouterRequest {
   model: string;
   messages: ChatMessage[];
@@ -23,12 +52,21 @@ export interface OpenRouterRequest {
   temperature: number;
   /**
    * OpenRouter unified reasoning parameter (subset used by this client).
-   * Only ever added on retries that follow an empty-content response —
-   * first-attempt request bodies never include it.
+   * Carries the configured effort from the first attempt; retries that
+   * follow an empty-content response add `exclude: true` and lower the
+   * effort to 'low'. Dropped for good after a 400 on a body carrying it.
    */
   reasoning?: {
     exclude?: boolean;
-    effort?: 'low' | 'medium' | 'high';
+    effort?: ReasoningEffort;
+  };
+  /**
+   * OpenRouter provider routing. `require_parameters` is deliberately never
+   * set: providers that ignore `reasoning` must stay eligible.
+   */
+  provider?: {
+    sort: ProviderSort;
+    allow_fallbacks: boolean;
   };
 }
 
@@ -69,7 +107,10 @@ const MAX_ERROR_BODY_CHARS = 300;
 /** Upper bound for any single retry delay (covers Retry-After abuse) */
 const MAX_RETRY_DELAY_MS = 30000;
 
-/** Cap for adaptive max_tokens growth on empty-content retries */
+/**
+ * Cap for adaptive max_tokens growth on empty-content retries. A budget
+ * already above the cap is kept as-is — retries never shrink max_tokens.
+ */
 const EMPTY_RETRY_MAX_TOKENS_CAP = 16000;
 
 /** Node/undici error codes that indicate a (retryable) network failure */
@@ -163,6 +204,20 @@ function extractTextContent(content: unknown): string | null {
   }
 
   return null;
+}
+
+/**
+ * Effort for an empty-content retry: the lower of the configured effort and
+ * the retry cap. Without a configured effort, the cap itself is used.
+ */
+function resolveEmptyRetryEffort(
+  configured: ReasoningEffort | undefined,
+  cap: ReasoningEffort
+): ReasoningEffort {
+  if (configured === undefined) return cap;
+  return REASONING_EFFORTS.indexOf(configured) < REASONING_EFFORTS.indexOf(cap)
+    ? configured
+    : cap;
 }
 
 /**
@@ -316,22 +371,32 @@ function interpretResponse(
  *   for a request body that carried the `reasoning` parameter — that is
  *   treated as "provider rejects the reasoning field": it is dropped for
  *   all subsequent attempts (keeping the raised max_tokens) and retried
+ * - `options.reasoningEffort` is sent as `reasoning: { effort }` from the
+ *   first attempt; without it, first attempts carry no reasoning field
  * - After an empty-content response, the retry doubles max_tokens
- *   (compounding, capped at 16000) and adds
- *   `reasoning: { exclude: true, effort: 'low' }` so reasoning models
- *   stop burning the whole budget on hidden reasoning. First attempts
- *   never carry the reasoning field.
+ *   (compounding, capped at 16000 — a larger configured budget is kept,
+ *   never lowered) and sends `reasoning: { exclude: true, effort }` with
+ *   effort = min(configured effort, options.emptyRetryEffort ?? 'low'),
+ *   so reasoning models stop burning the whole budget on hidden reasoning
+ * - `options.providerSort` is sent as `provider: { sort, allow_fallbacks: true }`
+ *   on every attempt
  */
 export async function callOpenRouter(
   config: OpenRouterConfig,
   model: string,
   messages: ChatMessage[],
   maxTokens: number,
-  temperature: number = 0.3
+  temperature: number = 0.3,
+  options: CallOptions = {}
 ): Promise<OpenRouterResult> {
   const url = `${config.baseUrl}/chat/completions`;
   const maxAttempts = 4; // 1 initial + 3 retries
   const backoffDelays = [1000, 2000, 4000]; // 1s, 2s, 4s
+  const { reasoningEffort, providerSort } = options;
+  const emptyRetryEffort = resolveEmptyRetryEffort(
+    reasoningEffort,
+    options.emptyRetryEffort ?? 'low'
+  );
 
   let currentMaxTokens = maxTokens;
   let useReasoningExclude = false; // set after an empty-content response
@@ -340,15 +405,22 @@ export async function callOpenRouter(
   let lastError: Error | null = null;
 
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
-    const includeReasoning = useReasoningExclude && !reasoningRejected;
     const requestBody: OpenRouterRequest = {
       model,
       messages,
       max_tokens: currentMaxTokens,
       temperature,
     };
-    if (includeReasoning) {
-      requestBody.reasoning = { exclude: true, effort: 'low' };
+    if (!reasoningRejected) {
+      if (useReasoningExclude) {
+        requestBody.reasoning = { exclude: true, effort: emptyRetryEffort };
+      } else if (reasoningEffort !== undefined) {
+        requestBody.reasoning = { effort: reasoningEffort };
+      }
+    }
+    const includeReasoning = requestBody.reasoning !== undefined;
+    if (providerSort !== undefined) {
+      requestBody.provider = { sort: providerSort, allow_fallbacks: true };
     }
 
     try {
@@ -358,7 +430,9 @@ export async function callOpenRouter(
       logger.debug(`OpenRouter request attempt ${attempt + 1}/${maxAttempts}`, {
         model,
         maxTokens: currentMaxTokens,
-        excludeReasoning: includeReasoning,
+        reasoningEffort: requestBody.reasoning?.effort,
+        excludeReasoning: requestBody.reasoning?.exclude === true,
+        providerSort,
       });
 
       let response: Response;
@@ -447,15 +521,16 @@ export async function callOpenRouter(
       // (the usual cause is a reasoning model burning all of max_tokens
       // on hidden reasoning) and ask the provider to suppress reasoning
       // on the next attempt. The doubling compounds across consecutive
-      // empty retries, capped at EMPTY_RETRY_MAX_TOKENS_CAP.
+      // empty retries, capped at EMPTY_RETRY_MAX_TOKENS_CAP — but a budget
+      // that already exceeds the cap is kept rather than cut.
       if (lastError instanceof OpenRouterEmptyError) {
         if (isLastAttempt) {
           throw lastError;
         }
 
-        currentMaxTokens = Math.min(
-          currentMaxTokens * 2,
-          EMPTY_RETRY_MAX_TOKENS_CAP
+        currentMaxTokens = Math.max(
+          currentMaxTokens,
+          Math.min(currentMaxTokens * 2, EMPTY_RETRY_MAX_TOKENS_CAP)
         );
         useReasoningExclude = true;
 

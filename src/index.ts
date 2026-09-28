@@ -9,7 +9,7 @@ import type { GitHubConfig, NormalizedDiff, TruncationInfo } from './github/diff
 import { postOrUpdateComment } from './github/comments.js';
 import { runScanners, runJudgeScan } from './review/scanner.js';
 import type { ScannerConfig, ScannerResult } from './review/scanner.js';
-import { runJudge } from './review/judge.js';
+import { runJudge, JUDGE_EMPTY_RETRY_EFFORT } from './review/judge.js';
 import type { JudgeConfig } from './review/judge.js';
 import {
   classifyScannerPool,
@@ -126,6 +126,9 @@ async function run(): Promise<void> {
       maxChars: inputs.maxChars,
       reviewMode: inputs.reviewMode,
       excludePaths: inputs.excludePaths,
+      judgeReasoningEffort: inputs.judgeReasoningEffort,
+      scannerReasoningEffort: inputs.scannerReasoningEffort,
+      judgeProviderSort: inputs.judgeProviderSort ?? '(none)',
     });
 
     // Set up GitHub config (token passed explicitly, no process.env mutation)
@@ -195,6 +198,16 @@ async function run(): Promise<void> {
       roles: inputs.scannerRoles,
       prContext,
       rescueModels: inputs.rescueModels,
+      reasoningEffort: inputs.scannerReasoningEffort,
+    };
+    // The judge scan is a scanner-style call made by the judge model, so it
+    // uses the judge's effort, provider routing and empty-retry effort floor
+    // rather than the scanners'.
+    const judgeScanConfig: ScannerConfig = {
+      ...scannerConfig,
+      reasoningEffort: inputs.judgeReasoningEffort,
+      providerSort: inputs.judgeProviderSort,
+      emptyRetryEffort: JUDGE_EMPTY_RETRY_EFFORT,
     };
 
     // Judge-scan isolation: the aggregation judge must stay a pure verifier —
@@ -204,7 +217,7 @@ async function run(): Promise<void> {
     const judgeScanPromise =
       inputs.judgeScan === 'always'
         ? runJudgeScan(
-            scannerConfig,
+            judgeScanConfig,
             diff.combinedDiff,
             inputs.judgeScanModel,
             inputs.judgeScanRole
@@ -224,7 +237,7 @@ async function run(): Promise<void> {
       if (anyUncovered || zeroSuccessful) {
         logger.warn('Running fallback judge scan', { anyUncovered, zeroSuccessful });
         judgeScanResult = await runJudgeScan(
-          scannerConfig,
+          judgeScanConfig,
           diff.combinedDiff,
           inputs.judgeScanModel,
           'general'
@@ -366,6 +379,8 @@ async function run(): Promise<void> {
       language: inputs.language,
       reviewMode: inputs.reviewMode,
       prContext,
+      reasoningEffort: inputs.judgeReasoningEffort,
+      providerSort: inputs.judgeProviderSort,
     };
 
     const judgeResult = await runJudge(judgeConfig, scannerResults, diff.combinedDiff);

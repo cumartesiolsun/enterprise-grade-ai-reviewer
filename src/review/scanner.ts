@@ -4,7 +4,12 @@
  * rescue scanners, and an isolated judge-scan helper
  */
 
-import type { OpenRouterConfig, ChatMessage } from '../openrouter/client.js';
+import type {
+  OpenRouterConfig,
+  ChatMessage,
+  ProviderSort,
+  ReasoningEffort,
+} from '../openrouter/client.js';
 import { callOpenRouter } from '../openrouter/client.js';
 import type { ScannerRole } from './prompts.js';
 import { buildScannerSystemPrompt, buildScannerUserPrompt } from './prompts.js';
@@ -60,6 +65,12 @@ export interface ScannerConfig {
    * the same run) are skipped.
    */
   rescueModels?: string[];
+  /** OpenRouter reasoning effort for every call made with this config. */
+  reasoningEffort?: ReasoningEffort | undefined;
+  /** OpenRouter provider sort; set only on the judge-scan config. */
+  providerSort?: ProviderSort | undefined;
+  /** Effort cap for empty-content retries; undefined keeps the client default ('low'). */
+  emptyRetryEffort?: ReasoningEffort | undefined;
 }
 
 /** Internal options for a single scanner call (rescue / judge-scan variants). */
@@ -102,7 +113,12 @@ async function runSingleScanner(
       model,
       messages,
       config.maxTokens,
-      0.3
+      0.3,
+      {
+        reasoningEffort: config.reasoningEffort,
+        providerSort: config.providerSort,
+        emptyRetryEffort: config.emptyRetryEffort,
+      }
     );
 
     const durationMs = Math.round(performance.now() - start);
@@ -337,7 +353,9 @@ export async function runScanners(
  * isolated in its own call and treated like any other scanner source.
  *
  * Uses the scanner system prompt for `role` and the scanner token budget from
- * `config.maxTokens` — NOT the judge budget.
+ * `config.maxTokens` — NOT the judge budget. Reasoning effort, provider sort
+ * and the empty-retry effort cap also come from `config`, so callers pass a
+ * config carrying the judge's settings.
  */
 export async function runJudgeScan(
   config: ScannerConfig,

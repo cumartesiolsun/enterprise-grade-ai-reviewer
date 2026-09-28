@@ -6,6 +6,8 @@
  */
 
 import type { ReviewMode } from './review/judge.js';
+import { REASONING_EFFORTS } from './openrouter/client.js';
+import type { ProviderSort, ReasoningEffort } from './openrouter/client.js';
 import type { ScannerRole } from './review/prompts.js';
 
 /**
@@ -21,6 +23,16 @@ export const VALID_JUDGE_SCAN_MODES: readonly JudgeScanMode[] = [
   'always',
   'fallback',
   'off',
+];
+
+/** Valid values for the judge-reasoning-effort / scanner-reasoning-effort inputs. */
+export const VALID_REASONING_EFFORTS: readonly ReasoningEffort[] = REASONING_EFFORTS;
+
+/** Valid values for the judge-provider-sort input. */
+export const VALID_PROVIDER_SORTS: readonly ProviderSort[] = [
+  'price',
+  'throughput',
+  'latency',
 ];
 
 /**
@@ -42,6 +54,12 @@ export interface ActionInputs {
   judgeScanRole: ScannerRole;
   /** Model used for the judge scan; already resolved (defaults to judgeModel). */
   judgeScanModel: string;
+  /** Reasoning effort for the aggregation judge and the judge scan. */
+  judgeReasoningEffort: ReasoningEffort;
+  /** Reasoning effort for regular scanners and the rescue pass. */
+  scannerReasoningEffort: ReasoningEffort;
+  /** Provider sort for both judge calls (scan + aggregation); undefined means "don't send". */
+  judgeProviderSort: ProviderSort | undefined;
   /** Minimum successful scanner-pool entries required; 0 disables the check. */
   minSuccessfulScanners: number;
   language: string;
@@ -246,6 +264,46 @@ export function parseJudgeScanMode(raw: string): JudgeScanMode {
 }
 
 /**
+ * Parse a reasoning-effort input (case-insensitive).
+ * Throws a clear error naming the input and listing the valid values.
+ */
+export function parseReasoningEffort(name: string, raw: string): ReasoningEffort {
+  const normalized = raw.trim().toLowerCase();
+  if (!(VALID_REASONING_EFFORTS as readonly string[]).includes(normalized)) {
+    throw new Error(
+      `Input '${name}' has invalid value '${raw}'. ` +
+        `Valid values: ${VALID_REASONING_EFFORTS.join(', ')}.`
+    );
+  }
+  return normalized as ReasoningEffort;
+}
+
+/**
+ * Parse the judge-provider-sort input (case-insensitive).
+ *
+ * Unlike most inputs this reads the raw env value instead of getInput():
+ * an explicitly empty value means "send no provider sort", so '' must not
+ * collapse to the 'price' default. Unset → 'price'.
+ */
+export function parseJudgeProviderSort(
+  env: Record<string, string | undefined>
+): ProviderSort | undefined {
+  const raw = env['INPUT_JUDGE-PROVIDER-SORT'];
+  if (raw == null) return 'price';
+
+  const normalized = raw.trim().toLowerCase();
+  if (normalized === '') return undefined;
+
+  if (!(VALID_PROVIDER_SORTS as readonly string[]).includes(normalized)) {
+    throw new Error(
+      `Input 'judge-provider-sort' has invalid value '${raw}'. ` +
+        `Valid values: ${VALID_PROVIDER_SORTS.join(', ')} (or empty to disable).`
+    );
+  }
+  return normalized as ProviderSort;
+}
+
+/**
  * Parse scanner-roles input and resolve it against the scanner model count.
  * Accepts the same three formats as scanner-models (JSON array, multiline, CSV).
  *
@@ -370,6 +428,18 @@ export function parseInputs(env: Record<string, string | undefined>): ActionInpu
   );
   const judgeScanModel = getInput(env, 'judge-scan-model', judgeModel);
 
+  // Reasoning effort per call class. The judge effort and provider sort
+  // cover both judge calls — the judge scan and aggregation (index.ts).
+  const judgeReasoningEffort = parseReasoningEffort(
+    'judge-reasoning-effort',
+    getInput(env, 'judge-reasoning-effort', 'high')
+  );
+  const scannerReasoningEffort = parseReasoningEffort(
+    'scanner-reasoning-effort',
+    getInput(env, 'scanner-reasoning-effort', 'medium')
+  );
+  const judgeProviderSort = parseJudgeProviderSort(env);
+
   // Minimum successful scanner-pool entries (0 disables the check)
   const minSuccessfulScanners = parseNonNegativeInt(
     'min-successful-scanners',
@@ -406,6 +476,9 @@ export function parseInputs(env: Record<string, string | undefined>): ActionInpu
     judgeScan,
     judgeScanRole,
     judgeScanModel,
+    judgeReasoningEffort,
+    scannerReasoningEffort,
+    judgeProviderSort,
     minSuccessfulScanners,
     language: getInput(env, 'language', 'tr'),
     autoSelectModels,
@@ -414,11 +487,11 @@ export function parseInputs(env: Record<string, string | undefined>): ActionInpu
     timeoutMs: parsePositiveInt('timeout-ms', getInput(env, 'timeout-ms', '180000')),
     maxTokensScanner: parsePositiveInt(
       'max-tokens-scanner',
-      getInput(env, 'max-tokens-scanner', '2000')
+      getInput(env, 'max-tokens-scanner', '8000')
     ),
     maxTokensJudge: parsePositiveInt(
       'max-tokens-judge',
-      getInput(env, 'max-tokens-judge', '4000')
+      getInput(env, 'max-tokens-judge', '32000')
     ),
     commentMarker,
     reviewMode,

@@ -735,4 +735,235 @@ describe('callOpenRouter', () => {
       expect(requestBodyOfCall(1)).toHaveProperty('reasoning');
     });
   });
+
+  describe('reasoning effort and provider routing options', () => {
+    function requestBodyOfCall(index: number): Record<string, unknown> {
+      const fetchCall = mockFetch.mock.calls[index] as [string, RequestInit];
+      return JSON.parse(fetchCall[1].body as string) as Record<string, unknown>;
+    }
+
+    const emptyLengthBody = {
+      id: 'gen-empty-length',
+      choices: [{ message: { role: 'assistant', content: '' }, finish_reason: 'length' }],
+      usage: { prompt_tokens: 10, completion_tokens: 2000, total_tokens: 2010 },
+    };
+
+    it('omits reasoning and provider entirely when no options are given', async () => {
+      mockFetch.mockResolvedValueOnce(mockResponse(successBody));
+
+      await callOpenRouter(defaultConfig, 'test-model', defaultMessages, 2000);
+
+      const body = requestBodyOfCall(0);
+      expect(body).not.toHaveProperty('reasoning');
+      expect(body).not.toHaveProperty('provider');
+    });
+
+    it.each([['none'], ['low'], ['medium'], ['high'], ['xhigh']] as const)(
+      'sends reasoning.effort=%s on the first attempt',
+      async (effort) => {
+        mockFetch.mockResolvedValueOnce(mockResponse(successBody));
+
+        await callOpenRouter(defaultConfig, 'test-model', defaultMessages, 2000, 0.3, {
+          reasoningEffort: effort,
+        });
+
+        const body = requestBodyOfCall(0);
+        expect(body.reasoning).toEqual({ effort });
+        expect(body).not.toHaveProperty('provider');
+      }
+    );
+
+    it.each([['price'], ['throughput'], ['latency']] as const)(
+      'sends provider.sort=%s with allow_fallbacks and never require_parameters',
+      async (sort) => {
+        mockFetch.mockResolvedValueOnce(mockResponse(successBody));
+
+        await callOpenRouter(defaultConfig, 'judge-model', defaultMessages, 4000, 0.2, {
+          reasoningEffort: 'high',
+          providerSort: sort,
+        });
+
+        const body = requestBodyOfCall(0);
+        expect(body.provider).toEqual({ sort, allow_fallbacks: true });
+        expect(body.provider).not.toHaveProperty('require_parameters');
+        expect(body.reasoning).toEqual({ effort: 'high' });
+      }
+    );
+
+    it('does not send provider when providerSort is undefined', async () => {
+      mockFetch.mockResolvedValueOnce(mockResponse(successBody));
+
+      await callOpenRouter(defaultConfig, 'judge-model', defaultMessages, 4000, 0.2, {
+        reasoningEffort: 'high',
+        providerSort: undefined,
+      });
+
+      expect(requestBodyOfCall(0)).not.toHaveProperty('provider');
+    });
+
+    it('drops reasoning (keeping provider) and retries when a provider rejects the effort with 400', async () => {
+      mockFetch
+        .mockResolvedValueOnce(mockResponse({ error: 'reasoning.effort is not supported' }, 400))
+        .mockResolvedValueOnce(mockResponse(successBody));
+
+      const promise = callOpenRouter(defaultConfig, 'judge-model', defaultMessages, 4000, 0.2, {
+        reasoningEffort: 'xhigh',
+        providerSort: 'price',
+      });
+      await vi.runAllTimersAsync();
+      const result = await promise;
+
+      expect(result.content).toBe('Looks good!');
+      expect(mockFetch).toHaveBeenCalledTimes(2);
+      expect(requestBodyOfCall(0).reasoning).toEqual({ effort: 'xhigh' });
+
+      const retryBody = requestBodyOfCall(1);
+      expect(retryBody).not.toHaveProperty('reasoning');
+      expect(retryBody.provider).toEqual({ sort: 'price', allow_fallbacks: true });
+      expect(retryBody.max_tokens).toBe(4000);
+    });
+
+    it('still fails fast on a 400 when no reasoning was sent', async () => {
+      mockFetch.mockResolvedValueOnce(mockResponse({ error: 'bad provider sort' }, 400));
+
+      await expect(
+        callOpenRouter(defaultConfig, 'judge-model', defaultMessages, 4000, 0.2, {
+          providerSort: 'price',
+        })
+      ).rejects.toThrow('OpenRouter API error 400');
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+    });
+
+    it('lowers a configured effort to low with exclusion on an empty-content retry', async () => {
+      mockFetch
+        .mockResolvedValueOnce(mockResponse(emptyLengthBody))
+        .mockResolvedValueOnce(mockResponse(successBody));
+
+      const promise = callOpenRouter(defaultConfig, 'test-model', defaultMessages, 2000, 0.3, {
+        reasoningEffort: 'high',
+        providerSort: 'throughput',
+      });
+      await vi.runAllTimersAsync();
+      await promise;
+
+      expect(requestBodyOfCall(0).reasoning).toEqual({ effort: 'high' });
+      const retryBody = requestBodyOfCall(1);
+      expect(retryBody.reasoning).toEqual({ exclude: true, effort: 'low' });
+      expect(retryBody.max_tokens).toBe(4000);
+      expect(retryBody.provider).toEqual({ sort: 'throughput', allow_fallbacks: true });
+    });
+
+    it.each([
+      ['xhigh', 'medium'],
+      ['high', 'medium'],
+      ['medium', 'medium'],
+      ['low', 'low'],
+      ['none', 'none'],
+    ] as const)(
+      'judge-style retry cap (emptyRetryEffort=medium): configured %s retries at %s',
+      async (configured, expected) => {
+        mockFetch
+          .mockResolvedValueOnce(mockResponse(emptyLengthBody))
+          .mockResolvedValueOnce(mockResponse(successBody));
+
+        const promise = callOpenRouter(defaultConfig, 'judge-model', defaultMessages, 4000, 0.2, {
+          reasoningEffort: configured,
+          providerSort: 'price',
+          emptyRetryEffort: 'medium',
+        });
+        await vi.runAllTimersAsync();
+        await promise;
+
+        expect(requestBodyOfCall(0).reasoning).toEqual({ effort: configured });
+        expect(requestBodyOfCall(1).reasoning).toEqual({ exclude: true, effort: expected });
+      }
+    );
+
+    it.each([['xhigh'], ['high'], ['medium'], ['low']] as const)(
+      'scanner-style retry (no cap given): configured %s retries at low',
+      async (configured) => {
+        mockFetch
+          .mockResolvedValueOnce(mockResponse(emptyLengthBody))
+          .mockResolvedValueOnce(mockResponse(successBody));
+
+        const promise = callOpenRouter(defaultConfig, 'test-model', defaultMessages, 2000, 0.3, {
+          reasoningEffort: configured,
+        });
+        await vi.runAllTimersAsync();
+        await promise;
+
+        expect(requestBodyOfCall(1).reasoning).toEqual({ exclude: true, effort: 'low' });
+      }
+    );
+
+    it('never lowers a configured max_tokens above the retry cap (32000 stays 32000)', async () => {
+      mockFetch
+        .mockResolvedValueOnce(mockResponse(emptyLengthBody))
+        .mockResolvedValueOnce(mockResponse(successBody));
+
+      const promise = callOpenRouter(defaultConfig, 'judge-model', defaultMessages, 32000, 0.2, {
+        reasoningEffort: 'high',
+        emptyRetryEffort: 'medium',
+      });
+      await vi.runAllTimersAsync();
+      await promise;
+
+      expect(requestBodyOfCall(0).max_tokens).toBe(32000);
+      expect(requestBodyOfCall(1).max_tokens).toBe(32000);
+    });
+
+    it('doubles the new scanner default (8000) up to the 16000 cap on an empty retry', async () => {
+      mockFetch
+        .mockResolvedValueOnce(mockResponse(emptyLengthBody))
+        .mockResolvedValueOnce(mockResponse(successBody));
+
+      const promise = callOpenRouter(defaultConfig, 'test-model', defaultMessages, 8000, 0.3, {
+        reasoningEffort: 'medium',
+      });
+      await vi.runAllTimersAsync();
+      await promise;
+
+      expect(requestBodyOfCall(1).max_tokens).toBe(16000);
+    });
+
+    it('keeps effort none on an empty-content retry instead of enabling reasoning', async () => {
+      mockFetch
+        .mockResolvedValueOnce(mockResponse(emptyLengthBody))
+        .mockResolvedValueOnce(mockResponse(successBody));
+
+      const promise = callOpenRouter(defaultConfig, 'test-model', defaultMessages, 2000, 0.3, {
+        reasoningEffort: 'none',
+      });
+      await vi.runAllTimersAsync();
+      await promise;
+
+      expect(requestBodyOfCall(1).reasoning).toEqual({ exclude: true, effort: 'none' });
+    });
+
+    it('returns only message content — reasoning output never reaches the parsed text', async () => {
+      mockFetch.mockResolvedValueOnce(
+        mockResponse({
+          id: 'gen-effort-reasoning',
+          choices: [
+            {
+              message: {
+                role: 'assistant',
+                content: '[{"file":"a.ts","line":1}]',
+                reasoning: 'thinking about [{"file":"leak.ts","line":99}]',
+              },
+              finish_reason: 'stop',
+            },
+          ],
+          usage: { prompt_tokens: 10, completion_tokens: 50, total_tokens: 60 },
+        })
+      );
+
+      const result = await callOpenRouter(defaultConfig, 'judge-model', defaultMessages, 4000, 0.2, {
+        reasoningEffort: 'high',
+      });
+
+      expect(result.content).toBe('[{"file":"a.ts","line":1}]');
+      expect(result.content).not.toContain('leak.ts');
+    });
+  });
 });

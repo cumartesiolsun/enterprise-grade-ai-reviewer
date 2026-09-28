@@ -1538,18 +1538,28 @@ import { createRequire as __WEBPACK_EXTERNAL_createRequire } from "module";
 /* harmony export */   TL: () => (/* binding */ parseInputs),
 /* harmony export */   V4: () => (/* binding */ getInput)
 /* harmony export */ });
-/* unused harmony exports VALID_JUDGE_SCAN_MODES, DEFAULT_EXCLUDE_PATHS, getRequiredInput, parsePositiveInt, parseNonNegativeInt, parseListInput, parseScannerModels, VALID_SCANNER_ROLES, parseScannerRole, parseJudgeScanMode, parseScannerRoles, parseExcludePaths */
+/* unused harmony exports VALID_JUDGE_SCAN_MODES, VALID_REASONING_EFFORTS, VALID_PROVIDER_SORTS, DEFAULT_EXCLUDE_PATHS, getRequiredInput, parsePositiveInt, parseNonNegativeInt, parseListInput, parseScannerModels, VALID_SCANNER_ROLES, parseScannerRole, parseJudgeScanMode, parseReasoningEffort, parseJudgeProviderSort, parseScannerRoles, parseExcludePaths */
+/* harmony import */ var _openrouter_client_js__WEBPACK_IMPORTED_MODULE_0__ = __nccwpck_require__(842);
 /**
  * Action input parsing and validation.
  *
  * All functions are pure over an env record (callers pass process.env),
  * which keeps them fully unit-testable without mutating global state.
  */
+
 /** Valid values for the judge-scan input. */
 const VALID_JUDGE_SCAN_MODES = [
     'always',
     'fallback',
     'off',
+];
+/** Valid values for the judge-reasoning-effort / scanner-reasoning-effort inputs. */
+const VALID_REASONING_EFFORTS = _openrouter_client_js__WEBPACK_IMPORTED_MODULE_0__/* .REASONING_EFFORTS */ .HQ;
+/** Valid values for the judge-provider-sort input. */
+const VALID_PROVIDER_SORTS = [
+    'price',
+    'throughput',
+    'latency',
 ];
 /**
  * Default glob patterns excluded from review when exclude-paths is not set.
@@ -1703,6 +1713,38 @@ function parseJudgeScanMode(raw) {
     return normalized;
 }
 /**
+ * Parse a reasoning-effort input (case-insensitive).
+ * Throws a clear error naming the input and listing the valid values.
+ */
+function parseReasoningEffort(name, raw) {
+    const normalized = raw.trim().toLowerCase();
+    if (!VALID_REASONING_EFFORTS.includes(normalized)) {
+        throw new Error(`Input '${name}' has invalid value '${raw}'. ` +
+            `Valid values: ${VALID_REASONING_EFFORTS.join(', ')}.`);
+    }
+    return normalized;
+}
+/**
+ * Parse the judge-provider-sort input (case-insensitive).
+ *
+ * Unlike most inputs this reads the raw env value instead of getInput():
+ * an explicitly empty value means "send no provider sort", so '' must not
+ * collapse to the 'price' default. Unset → 'price'.
+ */
+function parseJudgeProviderSort(env) {
+    const raw = env['INPUT_JUDGE-PROVIDER-SORT'];
+    if (raw == null)
+        return 'price';
+    const normalized = raw.trim().toLowerCase();
+    if (normalized === '')
+        return undefined;
+    if (!VALID_PROVIDER_SORTS.includes(normalized)) {
+        throw new Error(`Input 'judge-provider-sort' has invalid value '${raw}'. ` +
+            `Valid values: ${VALID_PROVIDER_SORTS.join(', ')} (or empty to disable).`);
+    }
+    return normalized;
+}
+/**
  * Parse scanner-roles input and resolve it against the scanner model count.
  * Accepts the same three formats as scanner-models (JSON array, multiline, CSV).
  *
@@ -1789,6 +1831,11 @@ function parseInputs(env) {
     const judgeScan = parseJudgeScanMode(getInput(env, 'judge-scan', 'always'));
     const judgeScanRole = parseScannerRole('judge-scan-role', getInput(env, 'judge-scan-role', 'general'));
     const judgeScanModel = getInput(env, 'judge-scan-model', judgeModel);
+    // Reasoning effort per call class. The judge effort and provider sort
+    // cover both judge calls — the judge scan and aggregation (index.ts).
+    const judgeReasoningEffort = parseReasoningEffort('judge-reasoning-effort', getInput(env, 'judge-reasoning-effort', 'high'));
+    const scannerReasoningEffort = parseReasoningEffort('scanner-reasoning-effort', getInput(env, 'scanner-reasoning-effort', 'medium'));
+    const judgeProviderSort = parseJudgeProviderSort(env);
     // Minimum successful scanner-pool entries (0 disables the check)
     const minSuccessfulScanners = parseNonNegativeInt('min-successful-scanners', getInput(env, 'min-successful-scanners', '1'));
     // Parse and validate review mode
@@ -1815,14 +1862,17 @@ function parseInputs(env) {
         judgeScan,
         judgeScanRole,
         judgeScanModel,
+        judgeReasoningEffort,
+        scannerReasoningEffort,
+        judgeProviderSort,
         minSuccessfulScanners,
         language: getInput(env, 'language', 'tr'),
         autoSelectModels,
         maxFiles: parsePositiveInt('max-files', getInput(env, 'max-files', '10')),
         maxChars: parsePositiveInt('max-chars', getInput(env, 'max-chars', '80000')),
         timeoutMs: parsePositiveInt('timeout-ms', getInput(env, 'timeout-ms', '180000')),
-        maxTokensScanner: parsePositiveInt('max-tokens-scanner', getInput(env, 'max-tokens-scanner', '2000')),
-        maxTokensJudge: parsePositiveInt('max-tokens-judge', getInput(env, 'max-tokens-judge', '4000')),
+        maxTokensScanner: parsePositiveInt('max-tokens-scanner', getInput(env, 'max-tokens-scanner', '8000')),
+        maxTokensJudge: parsePositiveInt('max-tokens-judge', getInput(env, 'max-tokens-judge', '32000')),
         commentMarker,
         reviewMode,
         excludePaths: parseExcludePaths(getInput(env, 'exclude-paths', '')),
@@ -7049,15 +7099,15 @@ function getConfigFromEnv(token, env = process.env) {
 /***/ ((module, __unused_webpack___webpack_exports__, __nccwpck_require__) => {
 
 __nccwpck_require__.a(module, async (__webpack_handle_async_dependencies__, __webpack_async_result__) => { try {
-/* harmony import */ var _config_js__WEBPACK_IMPORTED_MODULE_7__ = __nccwpck_require__(973);
-/* harmony import */ var _github_diff_js__WEBPACK_IMPORTED_MODULE_0__ = __nccwpck_require__(32);
-/* harmony import */ var _github_comments_js__WEBPACK_IMPORTED_MODULE_1__ = __nccwpck_require__(645);
-/* harmony import */ var _review_scanner_js__WEBPACK_IMPORTED_MODULE_2__ = __nccwpck_require__(878);
-/* harmony import */ var _review_judge_js__WEBPACK_IMPORTED_MODULE_3__ = __nccwpck_require__(939);
+/* harmony import */ var _config_js__WEBPACK_IMPORTED_MODULE_0__ = __nccwpck_require__(973);
+/* harmony import */ var _github_diff_js__WEBPACK_IMPORTED_MODULE_1__ = __nccwpck_require__(32);
+/* harmony import */ var _github_comments_js__WEBPACK_IMPORTED_MODULE_2__ = __nccwpck_require__(645);
+/* harmony import */ var _review_scanner_js__WEBPACK_IMPORTED_MODULE_3__ = __nccwpck_require__(878);
+/* harmony import */ var _review_judge_js__WEBPACK_IMPORTED_MODULE_4__ = __nccwpck_require__(939);
 /* harmony import */ var _review_verdict_js__WEBPACK_IMPORTED_MODULE_8__ = __nccwpck_require__(625);
-/* harmony import */ var _review_postResults_js__WEBPACK_IMPORTED_MODULE_4__ = __nccwpck_require__(600);
-/* harmony import */ var _utils_actionOutputs_js__WEBPACK_IMPORTED_MODULE_5__ = __nccwpck_require__(145);
-/* harmony import */ var _utils_logger_js__WEBPACK_IMPORTED_MODULE_6__ = __nccwpck_require__(893);
+/* harmony import */ var _review_postResults_js__WEBPACK_IMPORTED_MODULE_5__ = __nccwpck_require__(600);
+/* harmony import */ var _utils_actionOutputs_js__WEBPACK_IMPORTED_MODULE_6__ = __nccwpck_require__(145);
+/* harmony import */ var _utils_logger_js__WEBPACK_IMPORTED_MODULE_7__ = __nccwpck_require__(893);
 /**
  * Enterprise-Grade AI Reviewer
  * GitHub Action Entry Point (thin orchestrator)
@@ -7120,15 +7170,15 @@ function buildStepSummary(outcome) {
 function reportRunOutcome(outcome) {
     try {
         const scannersFailed = outcome.scannerResults.filter((r) => !r.success).length;
-        (0,_utils_actionOutputs_js__WEBPACK_IMPORTED_MODULE_5__/* .writeActionOutputs */ .i)({
+        (0,_utils_actionOutputs_js__WEBPACK_IMPORTED_MODULE_6__/* .writeActionOutputs */ .i)({
             'total-tokens': String(outcome.totalTokens),
             'findings-count': String(outcome.findingsCount),
             'scanners-failed': String(scannersFailed),
         });
-        (0,_utils_actionOutputs_js__WEBPACK_IMPORTED_MODULE_5__/* .writeStepSummary */ .o)(buildStepSummary(outcome));
+        (0,_utils_actionOutputs_js__WEBPACK_IMPORTED_MODULE_6__/* .writeStepSummary */ .o)(buildStepSummary(outcome));
     }
     catch (error) {
-        _utils_logger_js__WEBPACK_IMPORTED_MODULE_6__/* .logger */ .v.warn('Failed to write action outputs/step summary', {
+        _utils_logger_js__WEBPACK_IMPORTED_MODULE_7__/* .logger */ .v.warn('Failed to write action outputs/step summary', {
             error: error instanceof Error ? error.message : String(error),
         });
     }
@@ -7145,8 +7195,8 @@ async function run() {
     let diff;
     try {
         // Parse inputs
-        const inputs = (0,_config_js__WEBPACK_IMPORTED_MODULE_7__/* .parseInputs */ .TL)(process.env);
-        _utils_logger_js__WEBPACK_IMPORTED_MODULE_6__/* .logger */ .v.info('Starting Enterprise AI Review', {
+        const inputs = (0,_config_js__WEBPACK_IMPORTED_MODULE_0__/* .parseInputs */ .TL)(process.env);
+        _utils_logger_js__WEBPACK_IMPORTED_MODULE_7__/* .logger */ .v.info('Starting Enterprise AI Review', {
             scannerModels: inputs.scannerModels,
             judgeModel: inputs.judgeModel,
             language: inputs.language,
@@ -7154,18 +7204,21 @@ async function run() {
             maxChars: inputs.maxChars,
             reviewMode: inputs.reviewMode,
             excludePaths: inputs.excludePaths,
+            judgeReasoningEffort: inputs.judgeReasoningEffort,
+            scannerReasoningEffort: inputs.scannerReasoningEffort,
+            judgeProviderSort: inputs.judgeProviderSort ?? '(none)',
         });
         // Set up GitHub config (token passed explicitly, no process.env mutation)
-        const githubConfig = (0,_github_diff_js__WEBPACK_IMPORTED_MODULE_0__/* .getConfigFromEnv */ .Al)(inputs.githubToken);
-        _utils_logger_js__WEBPACK_IMPORTED_MODULE_6__/* .logger */ .v.info('GitHub config loaded', {
+        const githubConfig = (0,_github_diff_js__WEBPACK_IMPORTED_MODULE_1__/* .getConfigFromEnv */ .Al)(inputs.githubToken);
+        _utils_logger_js__WEBPACK_IMPORTED_MODULE_7__/* .logger */ .v.info('GitHub config loaded', {
             owner: githubConfig.owner,
             repo: githubConfig.repo,
             prNumber: githubConfig.prNumber,
         });
         // PR title/body context for the models. Log only its length — PR bodies
         // are untrusted input and must never be echoed into the logs.
-        const prContext = (0,_github_diff_js__WEBPACK_IMPORTED_MODULE_0__/* .getPRContextFromEnv */ .lL)();
-        _utils_logger_js__WEBPACK_IMPORTED_MODULE_6__/* .logger */ .v.info('PR context extracted', { prContextLength: prContext.length });
+        const prContext = (0,_github_diff_js__WEBPACK_IMPORTED_MODULE_1__/* .getPRContextFromEnv */ .lL)();
+        _utils_logger_js__WEBPACK_IMPORTED_MODULE_7__/* .logger */ .v.info('PR context extracted', { prContextLength: prContext.length });
         // Set up OpenRouter config
         const openrouterConfig = {
             apiKey: inputs.openrouterApiKey,
@@ -7173,16 +7226,16 @@ async function run() {
             timeoutMs: inputs.timeoutMs,
         };
         // Step 1: Fetch and normalize diff
-        diff = await (0,_github_diff_js__WEBPACK_IMPORTED_MODULE_0__/* .normalizeDiff */ .d1)(githubConfig, inputs.maxFiles, inputs.maxChars, inputs.excludePaths);
-        _utils_logger_js__WEBPACK_IMPORTED_MODULE_6__/* .logger */ .v.info('Diff fetched', {
+        diff = await (0,_github_diff_js__WEBPACK_IMPORTED_MODULE_1__/* .normalizeDiff */ .d1)(githubConfig, inputs.maxFiles, inputs.maxChars, inputs.excludePaths);
+        _utils_logger_js__WEBPACK_IMPORTED_MODULE_7__/* .logger */ .v.info('Diff fetched', {
             filesFound: diff.truncation.filesFound,
             filesReviewed: diff.truncation.filesReviewed,
             diffLength: diff.combinedDiff.length,
             wasTruncated: diff.truncation.wasTruncated,
         });
         if (diff.combinedDiff.length === 0) {
-            _utils_logger_js__WEBPACK_IMPORTED_MODULE_6__/* .logger */ .v.warn('No diff content to review');
-            await (0,_github_comments_js__WEBPACK_IMPORTED_MODULE_1__/* .postOrUpdateComment */ .IL)(githubConfig, {
+            _utils_logger_js__WEBPACK_IMPORTED_MODULE_7__/* .logger */ .v.warn('No diff content to review');
+            await (0,_github_comments_js__WEBPACK_IMPORTED_MODULE_2__/* .postOrUpdateComment */ .IL)(githubConfig, {
                 judgeOutput: 'No code changes detected in this PR.',
                 scannerResults: [],
                 truncation: diff.truncation,
@@ -7206,15 +7259,25 @@ async function run() {
             roles: inputs.scannerRoles,
             prContext,
             rescueModels: inputs.rescueModels,
+            reasoningEffort: inputs.scannerReasoningEffort,
+        };
+        // The judge scan is a scanner-style call made by the judge model, so it
+        // uses the judge's effort, provider routing and empty-retry effort floor
+        // rather than the scanners'.
+        const judgeScanConfig = {
+            ...scannerConfig,
+            reasoningEffort: inputs.judgeReasoningEffort,
+            providerSort: inputs.judgeProviderSort,
+            emptyRetryEffort: _review_judge_js__WEBPACK_IMPORTED_MODULE_4__/* .JUDGE_EMPTY_RETRY_EFFORT */ .yJ,
         };
         // Judge-scan isolation: the aggregation judge must stay a pure verifier —
         // a model cannot be an honest referee of its own in-prompt findings — so
         // the judge model's own scan is a separate call whose result enters the
         // scanner-results pool like any other scanner source (see runJudgeScan).
         const judgeScanPromise = inputs.judgeScan === 'always'
-            ? (0,_review_scanner_js__WEBPACK_IMPORTED_MODULE_2__/* .runJudgeScan */ .U)(scannerConfig, diff.combinedDiff, inputs.judgeScanModel, inputs.judgeScanRole)
+            ? (0,_review_scanner_js__WEBPACK_IMPORTED_MODULE_3__/* .runJudgeScan */ .U)(judgeScanConfig, diff.combinedDiff, inputs.judgeScanModel, inputs.judgeScanRole)
             : undefined;
-        const scanOutcome = await (0,_review_scanner_js__WEBPACK_IMPORTED_MODULE_2__/* .runScanners */ .D)(scannerConfig, diff.combinedDiff);
+        const scanOutcome = await (0,_review_scanner_js__WEBPACK_IMPORTED_MODULE_3__/* .runScanners */ .D)(scannerConfig, diff.combinedDiff);
         const coverage = scanOutcome.coverage;
         scannerResults = scanOutcome.results;
         let fallbackJudgeScanRan = false;
@@ -7223,8 +7286,8 @@ async function run() {
             const anyUncovered = coverage.some((c) => c.status === 'uncovered');
             const zeroSuccessful = !scannerResults.some((r) => r.success);
             if (anyUncovered || zeroSuccessful) {
-                _utils_logger_js__WEBPACK_IMPORTED_MODULE_6__/* .logger */ .v.warn('Running fallback judge scan', { anyUncovered, zeroSuccessful });
-                judgeScanResult = await (0,_review_scanner_js__WEBPACK_IMPORTED_MODULE_2__/* .runJudgeScan */ .U)(scannerConfig, diff.combinedDiff, inputs.judgeScanModel, 'general');
+                _utils_logger_js__WEBPACK_IMPORTED_MODULE_7__/* .logger */ .v.warn('Running fallback judge scan', { anyUncovered, zeroSuccessful });
+                judgeScanResult = await (0,_review_scanner_js__WEBPACK_IMPORTED_MODULE_3__/* .runJudgeScan */ .U)(judgeScanConfig, diff.combinedDiff, inputs.judgeScanModel, 'general');
                 fallbackJudgeScanRan = true;
             }
         }
@@ -7236,7 +7299,7 @@ async function run() {
         const degraded = fallbackJudgeScanRan || coverage.some((c) => c.status !== 'covered');
         const successfulScanners = scannerResults.filter((r) => r.success);
         const failedScanners = scannerResults.filter((r) => !r.success);
-        _utils_logger_js__WEBPACK_IMPORTED_MODULE_6__/* .logger */ .v.info('Scanners completed', {
+        _utils_logger_js__WEBPACK_IMPORTED_MODULE_7__/* .logger */ .v.info('Scanners completed', {
             successful: successfulScanners.length,
             failed: failedScanners.length,
             coverage,
@@ -7247,11 +7310,11 @@ async function run() {
         // contain at least min-successful-scanners successful entries; 0 disables.
         if (inputs.minSuccessfulScanners > 0 &&
             successfulScanners.length < inputs.minSuccessfulScanners) {
-            _utils_logger_js__WEBPACK_IMPORTED_MODULE_6__/* .logger */ .v.error('Not enough successful scanners', {
+            _utils_logger_js__WEBPACK_IMPORTED_MODULE_7__/* .logger */ .v.error('Not enough successful scanners', {
                 successful: successfulScanners.length,
                 required: inputs.minSuccessfulScanners,
             });
-            await (0,_github_comments_js__WEBPACK_IMPORTED_MODULE_1__/* .postOrUpdateComment */ .IL)(githubConfig, {
+            await (0,_github_comments_js__WEBPACK_IMPORTED_MODULE_2__/* .postOrUpdateComment */ .IL)(githubConfig, {
                 judgeOutput: `⚠️ AI review could not be completed — only ${successfulScanners.length} scanner(s) succeeded (minimum required: ${inputs.minSuccessfulScanners}). Check the Actions run log for details.`,
                 scannerResults,
                 truncation: diff.truncation,
@@ -7272,7 +7335,7 @@ async function run() {
         // deterministic verdict instead of a model call.
         const pool = (0,_review_verdict_js__WEBPACK_IMPORTED_MODULE_8__/* .classifyScannerPool */ .RE)(scannerResults);
         const scannerTokens = scannerResults.reduce((sum, r) => sum + r.tokensUsed, 0);
-        _utils_logger_js__WEBPACK_IMPORTED_MODULE_6__/* .logger */ .v.info('Scanner pool classified', {
+        _utils_logger_js__WEBPACK_IMPORTED_MODULE_7__/* .logger */ .v.info('Scanner pool classified', {
             kind: pool.kind,
             ran: pool.ran,
             usable: pool.usable.length,
@@ -7282,12 +7345,12 @@ async function run() {
             // Every scanner that ran reported NO_FINDINGS and nothing failed:
             // explicit APPROVE, no judge call. Inline mode takes the existing
             // empty-findings LGTM path.
-            await (0,_review_postResults_js__WEBPACK_IMPORTED_MODULE_4__/* .postResults */ .l)(inputs, githubConfig, {
+            await (0,_review_postResults_js__WEBPACK_IMPORTED_MODULE_5__/* .postResults */ .l)(inputs, githubConfig, {
                 output: (0,_review_verdict_js__WEBPACK_IMPORTED_MODULE_8__/* .buildAllClearVerdict */ .MV)(pool, inputs.language),
                 findings: inputs.reviewMode === 'inline' ? [] : undefined,
             }, diff, scannerResults, { coverage, degraded });
             const totalDuration = Math.round(performance.now() - startTime);
-            _utils_logger_js__WEBPACK_IMPORTED_MODULE_6__/* .logger */ .v.info('Review completed: all-clear (judge not called)', {
+            _utils_logger_js__WEBPACK_IMPORTED_MODULE_7__/* .logger */ .v.info('Review completed: all-clear (judge not called)', {
                 totalDurationMs: totalDuration,
                 totalTokens: scannerTokens,
                 scannersRan: pool.ran,
@@ -7305,11 +7368,11 @@ async function run() {
             // No findings, but part of the pool is missing: a clean result cannot
             // be claimed. Post the INCOMPLETE verdict and fail closed — a workflow
             // re-run repeats the scan.
-            _utils_logger_js__WEBPACK_IMPORTED_MODULE_6__/* .logger */ .v.error('Review incomplete: no findings and at least one scanner failed', {
+            _utils_logger_js__WEBPACK_IMPORTED_MODULE_7__/* .logger */ .v.error('Review incomplete: no findings and at least one scanner failed', {
                 ran: pool.ran,
                 failed: pool.failed.map((r) => `${r.model}: ${r.error ?? 'unknown error'}`),
             });
-            await (0,_github_comments_js__WEBPACK_IMPORTED_MODULE_1__/* .postOrUpdateComment */ .IL)(githubConfig, {
+            await (0,_github_comments_js__WEBPACK_IMPORTED_MODULE_2__/* .postOrUpdateComment */ .IL)(githubConfig, {
                 judgeOutput: (0,_review_verdict_js__WEBPACK_IMPORTED_MODULE_8__/* .buildIncompleteVerdict */ .cL)(pool, inputs.language),
                 scannerResults,
                 truncation: diff.truncation,
@@ -7333,10 +7396,12 @@ async function run() {
             language: inputs.language,
             reviewMode: inputs.reviewMode,
             prContext,
+            reasoningEffort: inputs.judgeReasoningEffort,
+            providerSort: inputs.judgeProviderSort,
         };
-        const judgeResult = await (0,_review_judge_js__WEBPACK_IMPORTED_MODULE_3__/* .runJudge */ .R)(judgeConfig, scannerResults, diff.combinedDiff);
+        const judgeResult = await (0,_review_judge_js__WEBPACK_IMPORTED_MODULE_4__/* .runJudge */ .Rw)(judgeConfig, scannerResults, diff.combinedDiff);
         judgeTokens = judgeResult.tokensUsed;
-        _utils_logger_js__WEBPACK_IMPORTED_MODULE_6__/* .logger */ .v.info('Judge completed', {
+        _utils_logger_js__WEBPACK_IMPORTED_MODULE_7__/* .logger */ .v.info('Judge completed', {
             success: judgeResult.success,
             tokensUsed: judgeResult.tokensUsed,
             durationMs: judgeResult.durationMs,
@@ -7347,8 +7412,8 @@ async function run() {
         // A failed judge means the review did not happen — fail the action instead
         // of posting the failure text as if it were the review (and going green).
         if (!judgeResult.success) {
-            _utils_logger_js__WEBPACK_IMPORTED_MODULE_6__/* .logger */ .v.error('Judge aggregation failed', { error: judgeResult.error });
-            await (0,_github_comments_js__WEBPACK_IMPORTED_MODULE_1__/* .postOrUpdateComment */ .IL)(githubConfig, {
+            _utils_logger_js__WEBPACK_IMPORTED_MODULE_7__/* .logger */ .v.error('Judge aggregation failed', { error: judgeResult.error });
+            await (0,_github_comments_js__WEBPACK_IMPORTED_MODULE_2__/* .postOrUpdateComment */ .IL)(githubConfig, {
                 judgeOutput: `⚠️ AI review could not be completed (judge aggregation failed: ${describeErrorClass(judgeResult.error)}). Check the Actions run log for details.`,
                 scannerResults,
                 truncation: diff.truncation,
@@ -7373,13 +7438,13 @@ async function run() {
             ? judgeResult
             : { ...judgeResult, output: (0,_review_verdict_js__WEBPACK_IMPORTED_MODULE_8__/* .appendDegradedSuffix */ .af)(judgeResult.output, degradedSuffix) };
         // Step 4: Post results to GitHub
-        await (0,_review_postResults_js__WEBPACK_IMPORTED_MODULE_4__/* .postResults */ .l)(inputs, githubConfig, postedJudge, diff, scannerResults, {
+        await (0,_review_postResults_js__WEBPACK_IMPORTED_MODULE_5__/* .postResults */ .l)(inputs, githubConfig, postedJudge, diff, scannerResults, {
             coverage,
             degraded,
             degradedSuffix,
         });
         const totalDuration = Math.round(performance.now() - startTime);
-        _utils_logger_js__WEBPACK_IMPORTED_MODULE_6__/* .logger */ .v.info('Review completed successfully', {
+        _utils_logger_js__WEBPACK_IMPORTED_MODULE_7__/* .logger */ .v.info('Review completed successfully', {
             totalDurationMs: totalDuration,
             totalTokens,
             scannersUsed: successfulScanners.length,
@@ -7394,16 +7459,16 @@ async function run() {
     }
     catch (error) {
         const errorMessage = error instanceof Error ? error.message : String(error);
-        _utils_logger_js__WEBPACK_IMPORTED_MODULE_6__/* .logger */ .v.error('Review failed', { error: errorMessage });
+        _utils_logger_js__WEBPACK_IMPORTED_MODULE_7__/* .logger */ .v.error('Review failed', { error: errorMessage });
         // PR comments only get a generic message plus at most the first line of
         // the error (truncated) — full details stay in the Actions log.
         const firstLine = (errorMessage.split('\n')[0] ?? '').slice(0, 200);
         try {
-            const fallbackToken = (0,_config_js__WEBPACK_IMPORTED_MODULE_7__/* .getInput */ .V4)(process.env, 'github-token', '');
-            const githubConfig = (0,_github_diff_js__WEBPACK_IMPORTED_MODULE_0__/* .getConfigFromEnv */ .Al)(fallbackToken);
-            const commentMarker = (0,_config_js__WEBPACK_IMPORTED_MODULE_7__/* .getInput */ .V4)(process.env, 'comment-marker', 'ENTERPRISE_AI_REVIEW');
+            const fallbackToken = (0,_config_js__WEBPACK_IMPORTED_MODULE_0__/* .getInput */ .V4)(process.env, 'github-token', '');
+            const githubConfig = (0,_github_diff_js__WEBPACK_IMPORTED_MODULE_1__/* .getConfigFromEnv */ .Al)(fallbackToken);
+            const commentMarker = (0,_config_js__WEBPACK_IMPORTED_MODULE_0__/* .getInput */ .V4)(process.env, 'comment-marker', 'ENTERPRISE_AI_REVIEW');
             const errorSuffix = firstLine ? `\n\nError: ${firstLine}` : '';
-            await (0,_github_comments_js__WEBPACK_IMPORTED_MODULE_1__/* .postOrUpdateComment */ .IL)(githubConfig, {
+            await (0,_github_comments_js__WEBPACK_IMPORTED_MODULE_2__/* .postOrUpdateComment */ .IL)(githubConfig, {
                 judgeOutput: `⚠️ AI review failed to complete. Check the Actions run log for details.${errorSuffix}`,
                 scannerResults: [],
                 truncation: diff?.truncation ?? EMPTY_TRUNCATION,
@@ -7434,6 +7499,7 @@ __webpack_async_result__();
 /***/ ((__unused_webpack_module, __webpack_exports__, __nccwpck_require__) => {
 
 /* harmony export */ __nccwpck_require__.d(__webpack_exports__, {
+/* harmony export */   HQ: () => (/* binding */ REASONING_EFFORTS),
 /* harmony export */   Ow: () => (/* binding */ callOpenRouter)
 /* harmony export */ });
 /* unused harmony exports OpenRouterHttpError, OpenRouterEmptyError */
@@ -7443,11 +7509,22 @@ __webpack_async_result__();
  * MVP v0.1 - Exact spec implementation
  */
 
+/** All reasoning effort levels, ordered from least to most reasoning. */
+const REASONING_EFFORTS = [
+    'none',
+    'low',
+    'medium',
+    'high',
+    'xhigh',
+];
 /** Maximum characters of an upstream error body embedded in Error messages */
 const MAX_ERROR_BODY_CHARS = 300;
 /** Upper bound for any single retry delay (covers Retry-After abuse) */
 const MAX_RETRY_DELAY_MS = 30000;
-/** Cap for adaptive max_tokens growth on empty-content retries */
+/**
+ * Cap for adaptive max_tokens growth on empty-content retries. A budget
+ * already above the cap is kept as-is — retries never shrink max_tokens.
+ */
 const EMPTY_RETRY_MAX_TOKENS_CAP = 16000;
 /** Node/undici error codes that indicate a (retryable) network failure */
 const NETWORK_ERROR_CODES = new Set([
@@ -7528,6 +7605,17 @@ function extractTextContent(content) {
         return text;
     }
     return null;
+}
+/**
+ * Effort for an empty-content retry: the lower of the configured effort and
+ * the retry cap. Without a configured effort, the cap itself is used.
+ */
+function resolveEmptyRetryEffort(configured, cap) {
+    if (configured === undefined)
+        return cap;
+    return REASONING_EFFORTS.indexOf(configured) < REASONING_EFFORTS.indexOf(cap)
+        ? configured
+        : cap;
 }
 /**
  * Check if HTTP status is retryable (429, 5xx)
@@ -7657,30 +7745,44 @@ function interpretResponse(data, model, maxTokens) {
  *   for a request body that carried the `reasoning` parameter — that is
  *   treated as "provider rejects the reasoning field": it is dropped for
  *   all subsequent attempts (keeping the raised max_tokens) and retried
+ * - `options.reasoningEffort` is sent as `reasoning: { effort }` from the
+ *   first attempt; without it, first attempts carry no reasoning field
  * - After an empty-content response, the retry doubles max_tokens
- *   (compounding, capped at 16000) and adds
- *   `reasoning: { exclude: true, effort: 'low' }` so reasoning models
- *   stop burning the whole budget on hidden reasoning. First attempts
- *   never carry the reasoning field.
+ *   (compounding, capped at 16000 — a larger configured budget is kept,
+ *   never lowered) and sends `reasoning: { exclude: true, effort }` with
+ *   effort = min(configured effort, options.emptyRetryEffort ?? 'low'),
+ *   so reasoning models stop burning the whole budget on hidden reasoning
+ * - `options.providerSort` is sent as `provider: { sort, allow_fallbacks: true }`
+ *   on every attempt
  */
-async function callOpenRouter(config, model, messages, maxTokens, temperature = 0.3) {
+async function callOpenRouter(config, model, messages, maxTokens, temperature = 0.3, options = {}) {
     const url = `${config.baseUrl}/chat/completions`;
     const maxAttempts = 4; // 1 initial + 3 retries
     const backoffDelays = [1000, 2000, 4000]; // 1s, 2s, 4s
+    const { reasoningEffort, providerSort } = options;
+    const emptyRetryEffort = resolveEmptyRetryEffort(reasoningEffort, options.emptyRetryEffort ?? 'low');
     let currentMaxTokens = maxTokens;
     let useReasoningExclude = false; // set after an empty-content response
     let reasoningRejected = false; // set after a 400 on a reasoning-carrying body
     let lastError = null;
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
-        const includeReasoning = useReasoningExclude && !reasoningRejected;
         const requestBody = {
             model,
             messages,
             max_tokens: currentMaxTokens,
             temperature,
         };
-        if (includeReasoning) {
-            requestBody.reasoning = { exclude: true, effort: 'low' };
+        if (!reasoningRejected) {
+            if (useReasoningExclude) {
+                requestBody.reasoning = { exclude: true, effort: emptyRetryEffort };
+            }
+            else if (reasoningEffort !== undefined) {
+                requestBody.reasoning = { effort: reasoningEffort };
+            }
+        }
+        const includeReasoning = requestBody.reasoning !== undefined;
+        if (providerSort !== undefined) {
+            requestBody.provider = { sort: providerSort, allow_fallbacks: true };
         }
         try {
             const controller = new AbortController();
@@ -7688,7 +7790,9 @@ async function callOpenRouter(config, model, messages, maxTokens, temperature = 
             _utils_logger_js__WEBPACK_IMPORTED_MODULE_0__/* .logger */ .v.debug(`OpenRouter request attempt ${attempt + 1}/${maxAttempts}`, {
                 model,
                 maxTokens: currentMaxTokens,
-                excludeReasoning: includeReasoning,
+                reasoningEffort: requestBody.reasoning?.effort,
+                excludeReasoning: requestBody.reasoning?.exclude === true,
+                providerSort,
             });
             let response;
             try {
@@ -7758,12 +7862,13 @@ async function callOpenRouter(config, model, messages, maxTokens, temperature = 
             // (the usual cause is a reasoning model burning all of max_tokens
             // on hidden reasoning) and ask the provider to suppress reasoning
             // on the next attempt. The doubling compounds across consecutive
-            // empty retries, capped at EMPTY_RETRY_MAX_TOKENS_CAP.
+            // empty retries, capped at EMPTY_RETRY_MAX_TOKENS_CAP — but a budget
+            // that already exceeds the cap is kept rather than cut.
             if (lastError instanceof OpenRouterEmptyError) {
                 if (isLastAttempt) {
                     throw lastError;
                 }
-                currentMaxTokens = Math.min(currentMaxTokens * 2, EMPTY_RETRY_MAX_TOKENS_CAP);
+                currentMaxTokens = Math.max(currentMaxTokens, Math.min(currentMaxTokens * 2, EMPTY_RETRY_MAX_TOKENS_CAP));
                 useReasoningExclude = true;
                 _utils_logger_js__WEBPACK_IMPORTED_MODULE_0__/* .logger */ .v.warn('OpenRouter returned empty content, retrying with adjusted request', {
                     error: lastError.message,
@@ -7799,7 +7904,8 @@ async function callOpenRouter(config, model, messages, maxTokens, temperature = 
 /***/ ((__unused_webpack_module, __webpack_exports__, __nccwpck_require__) => {
 
 /* harmony export */ __nccwpck_require__.d(__webpack_exports__, {
-/* harmony export */   R: () => (/* binding */ runJudge)
+/* harmony export */   Rw: () => (/* binding */ runJudge),
+/* harmony export */   yJ: () => (/* binding */ JUDGE_EMPTY_RETRY_EFFORT)
 /* harmony export */ });
 /* unused harmony export TRUNCATION_MARKER */
 /* harmony import */ var _openrouter_client_js__WEBPACK_IMPORTED_MODULE_0__ = __nccwpck_require__(842);
@@ -7814,6 +7920,12 @@ async function callOpenRouter(config, model, messages, maxTokens, temperature = 
 
 
 
+/**
+ * Empty-content retries of judge calls (aggregation and judge scan) lower the
+ * reasoning effort at most to this level — the judge keeps reasoning, unlike
+ * scanners, whose retries drop to the client default of 'low'.
+ */
+const JUDGE_EMPTY_RETRY_EFFORT = 'medium';
 /**
  * Appended to the judge output when the model stopped at the max-tokens-judge
  * limit (finish_reason=length): a truncated review must never read as a
@@ -7979,7 +8091,11 @@ async function runJudge(config, scannerResults, diff) {
             { role: 'system', content: systemPrompt },
             { role: 'user', content: userPrompt },
         ];
-        const { content, tokensUsed, finishReason } = await (0,_openrouter_client_js__WEBPACK_IMPORTED_MODULE_0__/* .callOpenRouter */ .Ow)(config.openrouter, config.model, messages, config.maxTokens, 0.2);
+        const { content, tokensUsed, finishReason } = await (0,_openrouter_client_js__WEBPACK_IMPORTED_MODULE_0__/* .callOpenRouter */ .Ow)(config.openrouter, config.model, messages, config.maxTokens, 0.2, {
+            reasoningEffort: config.reasoningEffort,
+            providerSort: config.providerSort,
+            emptyRetryEffort: JUDGE_EMPTY_RETRY_EFFORT,
+        });
         const durationMs = Math.round(performance.now() - start);
         const truncated = finishReason === 'length';
         _utils_logger_js__WEBPACK_IMPORTED_MODULE_2__/* .logger */ .v.info('Judge finished', {
@@ -8427,7 +8543,11 @@ async function runSingleScanner(config, model, role, diff, options) {
             { role: 'system', content: (0,_prompts_js__WEBPACK_IMPORTED_MODULE_1__/* .buildScannerSystemPrompt */ .eM)(config.language, role) },
             { role: 'user', content: (0,_prompts_js__WEBPACK_IMPORTED_MODULE_1__/* .buildScannerUserPrompt */ .MQ)(diff, config.prContext ?? '') },
         ];
-        const { content, tokensUsed, finishReason } = await (0,_openrouter_client_js__WEBPACK_IMPORTED_MODULE_0__/* .callOpenRouter */ .Ow)(config.openrouter, model, messages, config.maxTokens, 0.3);
+        const { content, tokensUsed, finishReason } = await (0,_openrouter_client_js__WEBPACK_IMPORTED_MODULE_0__/* .callOpenRouter */ .Ow)(config.openrouter, model, messages, config.maxTokens, 0.3, {
+            reasoningEffort: config.reasoningEffort,
+            providerSort: config.providerSort,
+            emptyRetryEffort: config.emptyRetryEffort,
+        });
         const durationMs = Math.round(performance.now() - start);
         const trimmed = content.trim();
         // v0.5 truthful SKIPPED semantics: SKIPPED only when the scanner
@@ -8617,7 +8737,9 @@ async function runScanners(config, diff) {
  * isolated in its own call and treated like any other scanner source.
  *
  * Uses the scanner system prompt for `role` and the scanner token budget from
- * `config.maxTokens` — NOT the judge budget.
+ * `config.maxTokens` — NOT the judge budget. Reasoning effort, provider sort
+ * and the empty-retry effort cap also come from `config`, so callers pass a
+ * config carrying the judge's settings.
  */
 async function runJudgeScan(config, diff, model, role) {
     return runSingleScanner(config, model, role, diff, {
