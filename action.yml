@@ -53,9 +53,9 @@ inputs:
     default: '80000'
   timeout-ms:
     description: >-
-      Timeout for each API call attempt in milliseconds. Judge calls
-      (aggregation and judge scan) retry a timeout at most once; scanner calls
-      use the full retry budget (up to 3 retries).
+      Timeout for each API call attempt in milliseconds. Every call (scanners,
+      judge scan, aggregation judge) retries a timeout at most once; 429/5xx,
+      network and empty-response retries keep the full budget (up to 3).
     required: false
     default: '600000'
   max-tokens-scanner:

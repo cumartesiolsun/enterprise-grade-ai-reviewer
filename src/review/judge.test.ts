@@ -161,7 +161,6 @@ describe('runJudge', () => {
         reasoningEffort: undefined,
         providerSort: undefined,
         emptyRetryEffort: 'medium',
-        maxTimeoutRetries: 1,
       },
     );
   });
@@ -186,7 +185,6 @@ describe('runJudge', () => {
         reasoningEffort: 'high',
         providerSort: 'throughput',
         emptyRetryEffort: 'medium',
-        maxTimeoutRetries: 1,
       },
     );
   });

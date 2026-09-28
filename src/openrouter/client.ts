@@ -45,7 +45,7 @@ export interface CallOptions {
   emptyRetryEffort?: ReasoningEffort | undefined;
   /**
    * Maximum retries after a timeout (AbortError), counted separately from
-   * other retry causes. Undefined: bounded only by the overall attempt budget.
+   * other retry causes. Defaults to DEFAULT_MAX_TIMEOUT_RETRIES.
    */
   maxTimeoutRetries?: number | undefined;
 }
@@ -108,6 +108,13 @@ export interface OpenRouterResult {
 
 /** Maximum characters of an upstream error body embedded in Error messages */
 const MAX_ERROR_BODY_CHARS = 300;
+
+/**
+ * Default retry limit after a timeout (AbortError). Each timeout already cost
+ * a full timeoutMs (10 min by default), so the attempt budget would multiply
+ * an already-long wait; other retry causes are not affected.
+ */
+const DEFAULT_MAX_TIMEOUT_RETRIES = 1;
 
 /** Upper bound for any single retry delay (covers Retry-After abuse) */
 const MAX_RETRY_DELAY_MS = 30000;
@@ -385,8 +392,8 @@ function interpretResponse(
  *   so reasoning models stop burning the whole budget on hidden reasoning
  * - `options.providerSort` is sent as `provider: { sort, allow_fallbacks: true }`
  *   on every attempt
- * - `options.maxTimeoutRetries` limits retries after timeouts only; network,
- *   HTTP and empty-content retries keep the overall attempt budget
+ * - Timeouts are retried at most `options.maxTimeoutRetries` times (default 1);
+ *   network, HTTP and empty-content retries keep the overall attempt budget
  */
 export async function callOpenRouter(
   config: OpenRouterConfig,
@@ -408,6 +415,7 @@ export async function callOpenRouter(
   let currentMaxTokens = maxTokens;
   let useReasoningExclude = false; // set after an empty-content response
   let reasoningRejected = false; // set after a 400 on a reasoning-carrying body
+  const maxTimeoutRetries = options.maxTimeoutRetries ?? DEFAULT_MAX_TIMEOUT_RETRIES;
   let timeoutRetries = 0;
 
   let lastError: Error | null = null;
@@ -553,13 +561,9 @@ export async function callOpenRouter(
         continue;
       }
 
-      // Timeouts may carry their own, tighter retry limit: each one already
-      // cost a full timeoutMs, so callers with long budgets can cap them.
-      if (
-        isTimeoutError(lastError) &&
-        options.maxTimeoutRetries !== undefined &&
-        timeoutRetries >= options.maxTimeoutRetries
-      ) {
+      // Timeouts have their own, tighter retry limit: each one already cost
+      // a full timeoutMs.
+      if (isTimeoutError(lastError) && timeoutRetries >= maxTimeoutRetries) {
         throw lastError;
       }
 

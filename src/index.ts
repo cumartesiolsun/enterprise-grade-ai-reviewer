@@ -9,11 +9,7 @@ import type { GitHubConfig, NormalizedDiff, TruncationInfo } from './github/diff
 import { postOrUpdateComment } from './github/comments.js';
 import { runScanners, runJudgeScan } from './review/scanner.js';
 import type { ScannerConfig, ScannerResult } from './review/scanner.js';
-import {
-  runJudge,
-  JUDGE_EMPTY_RETRY_EFFORT,
-  JUDGE_MAX_TIMEOUT_RETRIES,
-} from './review/judge.js';
+import { runJudge, JUDGE_EMPTY_RETRY_EFFORT } from './review/judge.js';
 import type { JudgeConfig } from './review/judge.js';
 import {
   classifyScannerPool,
@@ -205,14 +201,13 @@ async function run(): Promise<void> {
       reasoningEffort: inputs.scannerReasoningEffort,
     };
     // The judge scan is a scanner-style call made by the judge model, so it
-    // uses the judge's effort, provider routing, empty-retry effort floor and
-    // timeout retry limit rather than the scanners'.
+    // uses the judge's effort, provider routing and empty-retry effort floor
+    // rather than the scanners'.
     const judgeScanConfig: ScannerConfig = {
       ...scannerConfig,
       reasoningEffort: inputs.judgeReasoningEffort,
       providerSort: inputs.judgeProviderSort,
       emptyRetryEffort: JUDGE_EMPTY_RETRY_EFFORT,
-      maxTimeoutRetries: JUDGE_MAX_TIMEOUT_RETRIES,
     };
 
     // Judge-scan isolation: the aggregation judge must stay a pure verifier —
