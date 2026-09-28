@@ -43,6 +43,11 @@ export interface CallOptions {
    * 'none' stays 'none' and a retry never reasons more than the first attempt.
    */
   emptyRetryEffort?: ReasoningEffort | undefined;
+  /**
+   * Maximum retries after a timeout (AbortError), counted separately from
+   * other retry causes. Undefined: bounded only by the overall attempt budget.
+   */
+  maxTimeoutRetries?: number | undefined;
 }
 
 export interface OpenRouterRequest {
@@ -380,6 +385,8 @@ function interpretResponse(
  *   so reasoning models stop burning the whole budget on hidden reasoning
  * - `options.providerSort` is sent as `provider: { sort, allow_fallbacks: true }`
  *   on every attempt
+ * - `options.maxTimeoutRetries` limits retries after timeouts only; network,
+ *   HTTP and empty-content retries keep the overall attempt budget
  */
 export async function callOpenRouter(
   config: OpenRouterConfig,
@@ -401,6 +408,7 @@ export async function callOpenRouter(
   let currentMaxTokens = maxTokens;
   let useReasoningExclude = false; // set after an empty-content response
   let reasoningRejected = false; // set after a 400 on a reasoning-carrying body
+  let timeoutRetries = 0;
 
   let lastError: Error | null = null;
 
@@ -545,8 +553,19 @@ export async function callOpenRouter(
         continue;
       }
 
+      // Timeouts may carry their own, tighter retry limit: each one already
+      // cost a full timeoutMs, so callers with long budgets can cap them.
+      if (
+        isTimeoutError(lastError) &&
+        options.maxTimeoutRetries !== undefined &&
+        timeoutRetries >= options.maxTimeoutRetries
+      ) {
+        throw lastError;
+      }
+
       // Retry for timeout (AbortError) or network errors
       if ((isTimeoutError(lastError) || isNetworkError(lastError)) && !isLastAttempt) {
+        if (isTimeoutError(lastError)) timeoutRetries++;
         logger.warn(`OpenRouter network/timeout error, retrying...`, {
           error: lastError.message,
           attempt: attempt + 1,

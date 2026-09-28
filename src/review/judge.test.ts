@@ -157,7 +157,12 @@ describe('runJudge', () => {
       ]),
       config.maxTokens,
       0.2,
-      { reasoningEffort: undefined, providerSort: undefined, emptyRetryEffort: 'medium' },
+      {
+        reasoningEffort: undefined,
+        providerSort: undefined,
+        emptyRetryEffort: 'medium',
+        maxTimeoutRetries: 1,
+      },
     );
   });
 
@@ -177,7 +182,12 @@ describe('runJudge', () => {
       expect.any(Array),
       config.maxTokens,
       0.2,
-      { reasoningEffort: 'high', providerSort: 'throughput', emptyRetryEffort: 'medium' },
+      {
+        reasoningEffort: 'high',
+        providerSort: 'throughput',
+        emptyRetryEffort: 'medium',
+        maxTimeoutRetries: 1,
+      },
     );
   });
 

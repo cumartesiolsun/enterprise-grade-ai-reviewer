@@ -31,6 +31,12 @@ newest one.
   `reasoning` is retried without the field, so a provider that rejects the
   effort parameter never fails the review. `provider.require_parameters` is
   never set.
+- **`timeout-ms` default raised** 180000 → **600000** (10 minutes) so
+  reasoning at the new token budgets fits in one attempt.
+- **Judge calls retry a timeout at most once** (aggregation and judge scan),
+  so a stuck judge call is abandoned after ~2 × `timeout-ms` instead of up to
+  4 ×. Scanner calls keep the full retry budget. The limit counts timeouts
+  only — empty-response, 429/5xx and network-error retries are unaffected.
 - Empty-content retries lower the effort instead of always using `low`:
   judge calls (aggregation and judge scan) drop it at most to `medium`, scanner
   calls drop it to `low` as before; a lower configured effort is never raised
@@ -47,8 +53,10 @@ newest one.
   budgets) to avoid `[TRUNCATED]` reviews on reasoning models.
 - `max_tokens` is a ceiling, not a charge: cost follows tokens actually
   generated, but higher effort does generate more reasoning tokens and takes
-  longer — check `timeout-ms` (default 180000) against your judge model's
-  speed.
+  longer.
+- Scanner calls can now wait up to 4 × 10 minutes on repeated timeouts. If
+  your workflow sets a job-level `timeout-minutes`, make sure it leaves room
+  for that, or pin a lower `timeout-ms`.
 - Only message `content` is parsed for findings; model `reasoning` output is
   never mixed into the review (unchanged, now covered by tests).
 

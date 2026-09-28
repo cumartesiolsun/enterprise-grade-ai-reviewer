@@ -393,7 +393,7 @@ describe('parseInputs', () => {
       autoSelectModels: false,
       maxFiles: 10,
       maxChars: 80000,
-      timeoutMs: 180000,
+      timeoutMs: 600000,
       maxTokensScanner: 8000,
       maxTokensJudge: 32000,
       commentMarker: 'ENTERPRISE_AI_REVIEW',

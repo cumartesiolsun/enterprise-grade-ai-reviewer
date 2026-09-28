@@ -209,7 +209,7 @@ scanner-roles: security
 | `base-url` | No | `https://openrouter.ai/api/v1` | OpenRouter API base URL |
 | `max-files` | No | `10` | Maximum files to review |
 | `max-chars` | No | `80000` | Maximum characters in diff |
-| `timeout-ms` | No | `180000` | API call timeout (3 minutes) |
+| `timeout-ms` | No | `600000` | Timeout per API call attempt (10 minutes — sized for reasoning at the v0.6 token defaults). Judge calls retry a timeout at most once, see [Retry Policy](#retry-policy) |
 | `max-tokens-scanner` | No | `8000` | Max tokens per scanner response (reasoning tokens included on budget-based models) |
 | `max-tokens-judge` | No | `32000` | Max tokens for judge response (reasoning tokens included on budget-based models). If the judge stops at this limit (`finish_reason=length`), the posted comment ends with a visible ⚠️ `[TRUNCATED]` marker and inline findings fall back to summary — a truncated review never reads as a complete one |
 | `comment-marker` | No | `ENTERPRISE_AI_REVIEW` | Marker for finding/updating PR comment |
@@ -387,6 +387,7 @@ API calls follow this retry policy:
 - **No Retry**: 400 (bad request) — fails immediately (except a 400 on a request carrying the `reasoning` parameter, which is retried without it)
 - **Backoff**: Exponential (1s, 2s, 4s)
 - **Max Retries**: 3
+- **Timeouts on judge calls** (v0.6): the aggregation judge and the judge scan retry a timeout **at most once** — at the default `timeout-ms` (10 minutes) a judge call is abandoned after ~20 minutes instead of ~40. Scanner calls keep the full budget. The limit counts timeouts only: empty-response, 429/5xx and network-error retries are unaffected.
 
 ## Failure Behavior
 
@@ -429,6 +430,7 @@ src/
 - ✅ Judge provider routing (`judge-provider-sort`: `price` / `throughput` / `latency`, with `allow_fallbacks: true`) on both judge calls
 - ✅ Token defaults raised to leave room for reasoning: `max-tokens-judge` 32000, `max-tokens-scanner` 8000
 - ✅ Judge empty-response retries keep reasoning at `medium` instead of dropping to `low`
+- ✅ `timeout-ms` default raised to 600000 (10 min); judge calls retry a timeout at most once
 
 ### Shipped in v0.5.3
 - ✅ Scanner-pool classification before the judge: all-clear → deterministic **APPROVE** (no judge call); no findings + a failed scanner → deterministic **INCOMPLETE** and a failed run (fail-closed); the "review could not be completed" judge prompt is gone

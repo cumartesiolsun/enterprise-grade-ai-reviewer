@@ -250,6 +250,106 @@ describe('callOpenRouter', () => {
     expect(mockFetch).toHaveBeenCalledTimes(2);
   });
 
+  describe('maxTimeoutRetries', () => {
+    function abortError(): Error {
+      const error = new Error('This operation was aborted');
+      error.name = 'AbortError';
+      return error;
+    }
+
+    const emptyLengthBody = {
+      id: 'gen-empty-length',
+      choices: [{ message: { role: 'assistant', content: '' }, finish_reason: 'length' }],
+      usage: { prompt_tokens: 10, completion_tokens: 2000, total_tokens: 2010 },
+    };
+
+    it('retries a timeout once and then fails when maxTimeoutRetries is 1', async () => {
+      mockFetch.mockRejectedValue(abortError());
+
+      const promise = callOpenRouter(defaultConfig, 'judge-model', defaultMessages, 1000, 0.2, {
+        maxTimeoutRetries: 1,
+      });
+      const captured = promise.catch((error: unknown) => error);
+      await vi.runAllTimersAsync();
+      const error = await captured;
+
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).name).toBe('AbortError');
+      expect(mockFetch).toHaveBeenCalledTimes(2);
+    });
+
+    it('succeeds when the single allowed timeout retry succeeds', async () => {
+      mockFetch
+        .mockRejectedValueOnce(abortError())
+        .mockResolvedValueOnce(mockResponse(successBody));
+
+      const promise = callOpenRouter(defaultConfig, 'judge-model', defaultMessages, 1000, 0.2, {
+        maxTimeoutRetries: 1,
+      });
+      await vi.runAllTimersAsync();
+
+      expect((await promise).content).toBe('Looks good!');
+      expect(mockFetch).toHaveBeenCalledTimes(2);
+    });
+
+    it('keeps the full attempt budget (3 timeout retries) when unset', async () => {
+      mockFetch.mockRejectedValue(abortError());
+
+      const promise = callOpenRouter(defaultConfig, 'test-model', defaultMessages, 1000);
+      const captured = promise.catch((error: unknown) => error);
+      await vi.runAllTimersAsync();
+      await captured;
+
+      expect(mockFetch).toHaveBeenCalledTimes(4);
+    });
+
+    it('does not spend the timeout limit on empty-content retries', async () => {
+      mockFetch
+        .mockResolvedValueOnce(mockResponse(emptyLengthBody)) // empty → adaptive retry
+        .mockResolvedValueOnce(mockResponse(emptyLengthBody)) // empty → adaptive retry
+        .mockRejectedValueOnce(abortError()) // first timeout → the one allowed retry
+        .mockResolvedValueOnce(mockResponse(successBody));
+
+      const promise = callOpenRouter(defaultConfig, 'judge-model', defaultMessages, 1000, 0.2, {
+        reasoningEffort: 'high',
+        emptyRetryEffort: 'medium',
+        maxTimeoutRetries: 1,
+      });
+      await vi.runAllTimersAsync();
+
+      expect((await promise).content).toBe('Looks good!');
+      expect(mockFetch).toHaveBeenCalledTimes(4);
+    });
+
+    it('does not limit network-error retries', async () => {
+      mockFetch
+        .mockRejectedValueOnce(new TypeError('fetch failed'))
+        .mockRejectedValueOnce(new TypeError('fetch failed'))
+        .mockResolvedValueOnce(mockResponse(successBody));
+
+      const promise = callOpenRouter(defaultConfig, 'judge-model', defaultMessages, 1000, 0.2, {
+        maxTimeoutRetries: 1,
+      });
+      await vi.runAllTimersAsync();
+
+      expect((await promise).content).toBe('Looks good!');
+      expect(mockFetch).toHaveBeenCalledTimes(3);
+    });
+
+    it('allows no timeout retry at all when maxTimeoutRetries is 0', async () => {
+      mockFetch.mockRejectedValue(abortError());
+
+      const promise = callOpenRouter(defaultConfig, 'judge-model', defaultMessages, 1000, 0.2, {
+        maxTimeoutRetries: 0,
+      });
+      const captured = promise.catch((error: unknown) => error);
+      await vi.runAllTimersAsync();
+      await captured;
+
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+    });
+  });
+
   it('retries when fetch rejects with a network TypeError', async () => {
     mockFetch
       .mockRejectedValueOnce(new TypeError('fetch failed'))

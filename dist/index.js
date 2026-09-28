@@ -1870,7 +1870,7 @@ function parseInputs(env) {
         autoSelectModels,
         maxFiles: parsePositiveInt('max-files', getInput(env, 'max-files', '10')),
         maxChars: parsePositiveInt('max-chars', getInput(env, 'max-chars', '80000')),
-        timeoutMs: parsePositiveInt('timeout-ms', getInput(env, 'timeout-ms', '180000')),
+        timeoutMs: parsePositiveInt('timeout-ms', getInput(env, 'timeout-ms', '600000')),
         maxTokensScanner: parsePositiveInt('max-tokens-scanner', getInput(env, 'max-tokens-scanner', '8000')),
         maxTokensJudge: parsePositiveInt('max-tokens-judge', getInput(env, 'max-tokens-judge', '32000')),
         commentMarker,
@@ -7262,13 +7262,14 @@ async function run() {
             reasoningEffort: inputs.scannerReasoningEffort,
         };
         // The judge scan is a scanner-style call made by the judge model, so it
-        // uses the judge's effort, provider routing and empty-retry effort floor
-        // rather than the scanners'.
+        // uses the judge's effort, provider routing, empty-retry effort floor and
+        // timeout retry limit rather than the scanners'.
         const judgeScanConfig = {
             ...scannerConfig,
             reasoningEffort: inputs.judgeReasoningEffort,
             providerSort: inputs.judgeProviderSort,
             emptyRetryEffort: _review_judge_js__WEBPACK_IMPORTED_MODULE_4__/* .JUDGE_EMPTY_RETRY_EFFORT */ .yJ,
+            maxTimeoutRetries: _review_judge_js__WEBPACK_IMPORTED_MODULE_4__/* .JUDGE_MAX_TIMEOUT_RETRIES */ .Gc,
         };
         // Judge-scan isolation: the aggregation judge must stay a pure verifier —
         // a model cannot be an honest referee of its own in-prompt findings — so
@@ -7754,6 +7755,8 @@ function interpretResponse(data, model, maxTokens) {
  *   so reasoning models stop burning the whole budget on hidden reasoning
  * - `options.providerSort` is sent as `provider: { sort, allow_fallbacks: true }`
  *   on every attempt
+ * - `options.maxTimeoutRetries` limits retries after timeouts only; network,
+ *   HTTP and empty-content retries keep the overall attempt budget
  */
 async function callOpenRouter(config, model, messages, maxTokens, temperature = 0.3, options = {}) {
     const url = `${config.baseUrl}/chat/completions`;
@@ -7764,6 +7767,7 @@ async function callOpenRouter(config, model, messages, maxTokens, temperature = 
     let currentMaxTokens = maxTokens;
     let useReasoningExclude = false; // set after an empty-content response
     let reasoningRejected = false; // set after a 400 on a reasoning-carrying body
+    let timeoutRetries = 0;
     let lastError = null;
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
         const requestBody = {
@@ -7880,8 +7884,17 @@ async function callOpenRouter(config, model, messages, maxTokens, temperature = 
                 await sleep(backoffDelay);
                 continue;
             }
+            // Timeouts may carry their own, tighter retry limit: each one already
+            // cost a full timeoutMs, so callers with long budgets can cap them.
+            if (isTimeoutError(lastError) &&
+                options.maxTimeoutRetries !== undefined &&
+                timeoutRetries >= options.maxTimeoutRetries) {
+                throw lastError;
+            }
             // Retry for timeout (AbortError) or network errors
             if ((isTimeoutError(lastError) || isNetworkError(lastError)) && !isLastAttempt) {
+                if (isTimeoutError(lastError))
+                    timeoutRetries++;
                 _utils_logger_js__WEBPACK_IMPORTED_MODULE_0__/* .logger */ .v.warn(`OpenRouter network/timeout error, retrying...`, {
                     error: lastError.message,
                     attempt: attempt + 1,
@@ -7904,6 +7917,7 @@ async function callOpenRouter(config, model, messages, maxTokens, temperature = 
 /***/ ((__unused_webpack_module, __webpack_exports__, __nccwpck_require__) => {
 
 /* harmony export */ __nccwpck_require__.d(__webpack_exports__, {
+/* harmony export */   Gc: () => (/* binding */ JUDGE_MAX_TIMEOUT_RETRIES),
 /* harmony export */   Rw: () => (/* binding */ runJudge),
 /* harmony export */   yJ: () => (/* binding */ JUDGE_EMPTY_RETRY_EFFORT)
 /* harmony export */ });
@@ -7926,6 +7940,12 @@ async function callOpenRouter(config, model, messages, maxTokens, temperature = 
  * scanners, whose retries drop to the client default of 'low'.
  */
 const JUDGE_EMPTY_RETRY_EFFORT = 'medium';
+/**
+ * Judge calls (aggregation and judge scan) retry a timeout only once: with
+ * long timeout-ms budgets, the default attempt budget would multiply an
+ * already-long wait. Scanners keep the client's default.
+ */
+const JUDGE_MAX_TIMEOUT_RETRIES = 1;
 /**
  * Appended to the judge output when the model stopped at the max-tokens-judge
  * limit (finish_reason=length): a truncated review must never read as a
@@ -8095,6 +8115,7 @@ async function runJudge(config, scannerResults, diff) {
             reasoningEffort: config.reasoningEffort,
             providerSort: config.providerSort,
             emptyRetryEffort: JUDGE_EMPTY_RETRY_EFFORT,
+            maxTimeoutRetries: JUDGE_MAX_TIMEOUT_RETRIES,
         });
         const durationMs = Math.round(performance.now() - start);
         const truncated = finishReason === 'length';
@@ -8547,6 +8568,7 @@ async function runSingleScanner(config, model, role, diff, options) {
             reasoningEffort: config.reasoningEffort,
             providerSort: config.providerSort,
             emptyRetryEffort: config.emptyRetryEffort,
+            maxTimeoutRetries: config.maxTimeoutRetries,
         });
         const durationMs = Math.round(performance.now() - start);
         const trimmed = content.trim();

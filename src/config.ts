@@ -484,7 +484,7 @@ export function parseInputs(env: Record<string, string | undefined>): ActionInpu
     autoSelectModels,
     maxFiles: parsePositiveInt('max-files', getInput(env, 'max-files', '10')),
     maxChars: parsePositiveInt('max-chars', getInput(env, 'max-chars', '80000')),
-    timeoutMs: parsePositiveInt('timeout-ms', getInput(env, 'timeout-ms', '180000')),
+    timeoutMs: parsePositiveInt('timeout-ms', getInput(env, 'timeout-ms', '600000')),
     maxTokensScanner: parsePositiveInt(
       'max-tokens-scanner',
       getInput(env, 'max-tokens-scanner', '8000')
